@@ -1,0 +1,29 @@
+{
+  "message": "Success",
+  "pkg_id": "PKG013979",
+  "departure_date": "17-04-2026",
+  "hub_city": "Hyderabad",
+  "pricing_summary": "48783.0 INR | 2 Adults | 1 Room",
+  "is_flight_enabled": false,
+  "data": {
+    "totalPrice": 48783.0,
+    "totalTax": 2323.0,
+    "grossPrice": 46460.0,
+    "totalDiscount": 0.0,
+    "netPrice": 46460.0,
+    "grossBreakupSummary": "USD 466.0 + INR 2316.0",
+    "currencySummary": "USD 466.0 (Rate: 94.73) + INR 2316.0",
+    "rooms": [
+      {
+        "roomNo": 1,
+        "noAdult": 2,
+        "noCwb": 0,
+        "noCnbJ": 0,
+        "noCnbS": 0,
+        "inf": 0,
+        "pax": 2
+      }
+    ]
+  },
+  "code": 200
+}

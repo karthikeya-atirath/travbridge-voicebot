@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Travbridge Voice AI</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#f0f2f5;--card:#ffffff;--card2:#f8fafc;--border:#e2e8f0;--border2:#cbd5e1;--text:#1e293b;--muted:#64748b;--accent:#6366f1;--green:#10b981;--danger:#ef4444;--radius:14px}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:1.25rem}
+a{text-decoration:none;color:inherit}
+.page{max-width:1500px;margin:0 auto}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:.75rem}
+.logo h1{font-size:1.5rem;font-weight:700;background:linear-gradient(90deg,#4f46e5,#7c3aed);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.logo p{color:var(--muted);font-size:.8rem}
+.ha{display:flex;gap:.5rem;align-items:center}
+.btn{padding:.45rem .9rem;border-radius:8px;font-weight:500;font-size:.8rem;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:.35rem;border:1px solid transparent;font-family:inherit}
+.btn-g{background:var(--card);border-color:var(--border2);color:var(--muted)}.btn-g:hover{background:var(--card2);color:var(--text)}
+.btn-d{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:#dc2626}
+.btn-p{background:var(--accent);color:#fff}.btn-p:hover{background:#4f46e5}
+.btn-s{padding:.25rem .6rem;font-size:.72rem}
+.up{background:var(--card);border:1px solid var(--border);border-radius:100px;padding:.3rem .7rem;font-size:.75rem;color:var(--muted)}
+.up strong{color:var(--text)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-bottom:1.25rem}
+.cols-single{grid-template-columns:1fr}
+@media(max-width:960px){.cols{grid-template-columns:1fr}}
+.panel-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem}
+.pt{font-size:.85rem;font-weight:600;color:#334155;display:flex;align-items:center;gap:.4rem}
+.badge{display:inline-flex;align-items:center;padding:.12rem .45rem;border-radius:100px;font-size:.68rem;font-weight:700}
+.bi{background:rgba(99,102,241,.1);color:#4f46e5;border:1px solid rgba(99,102,241,.2)}
+.bg{background:rgba(16,185,129,.1);color:#059669;border:1px solid rgba(16,185,129,.2)}
+.filters{display:flex;gap:.5rem;align-items:end;flex-wrap:wrap;padding:.75rem 1rem;border-bottom:1px solid var(--border)}
+.fg{display:flex;flex-direction:column;gap:.2rem}
+.fg label{font-size:.65rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.fg input,.fg select{padding:.4rem .55rem;background:#fff;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.78rem;font-family:inherit}
+.fg input:focus,.fg select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(99,102,241,.1)}
+.tbl{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:380px}
+th{background:#f8fafc;font-weight:600;color:#475569;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;padding:.6rem .8rem;border-bottom:2px solid var(--border);text-align:left;white-space:nowrap}
+td{padding:.6rem .8rem;border-bottom:1px solid var(--border);font-size:.78rem;vertical-align:middle}
+tbody tr{cursor:pointer;transition:background .12s}tbody tr:hover{background:#f1f5f9}
+tbody tr:last-child td{border-bottom:none}
+.empty{text-align:center;padding:2rem 1rem;color:var(--muted);font-size:.82rem}
+.empty i{font-size:1.5rem;margin-bottom:.4rem;opacity:.3;display:block}
+.loader{text-align:center;padding:1.5rem;color:var(--muted);font-size:.8rem}
+.pgc{display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border-top:1px solid var(--border);font-size:.72rem;color:var(--muted)}
+.chart-box{padding:.75rem;height:200px;display:none}
+.chart-box.active{display:block}
+.tab-row{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 1rem}
+.tab-btn{padding:.45rem .8rem;font-size:.72rem;font-weight:600;color:var(--muted);cursor:pointer;border:none;background:none;font-family:inherit;border-bottom:2px solid transparent;transition:all .15s}
+.tab-btn.active{color:var(--text);border-bottom-color:var(--accent)}
+.tab-btn:hover{color:var(--text)}
+.sankey-box{padding:0;display:none;min-height:60px;overflow:hidden}
+.sankey-box.active{display:block}
+/* GA4 Path Exploration Redesign */
+.path-wrap{position:relative;overflow-x:auto;overflow-y:hidden;background:#f8fafc;border-radius:12px;margin-top:0.5rem;border:1px solid var(--border)}
+.path-explorer{display:flex;align-items:stretch;gap:3rem;min-height:240px;position:relative;padding:1.5rem;}
+.path-col{width:180px;flex-shrink:0;display:flex;flex-direction:column;gap:0.8rem;position:relative;z-index:1}
+.path-col-hdr{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:0.4rem;text-align:center;background:rgba(99,102,241,0.05);padding:0.3rem;border-radius:6px;}
+.path-node{background:#fff;border:1px solid var(--border);border-radius:10px;padding:.75rem;cursor:pointer;transition:all .2s;position:relative;display:flex;flex-direction:column;gap:0.4rem;box-shadow:0 2px 8px rgba(0,0,0,0.05);}
+.path-node:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 6px 16px rgba(99,102,241,0.12);}
+.path-node.lead{background:rgba(16,185,129,0.05);border-color:rgba(16,185,129,0.4);}
+.path-node.dropped{background:rgba(239,68,68,0.03);border-color:rgba(239,68,68,0.2);opacity:0.85;}
+.path-name{font-size:.7rem;font-weight:600;color:#334155;word-break:break-word;line-height:1.3;}
+.path-node.lead .path-name{color:#059669;}
+.path-node.dropped .path-name{color:#dc2626;}
+.path-stats{display:flex;align-items:baseline;justify-content:space-between;margin-top:0.2rem;}
+.path-count{font-size:1.1rem;font-weight:700;color:var(--text);letter-spacing:-0.02em;}
+.path-pct{font-size:.65rem;font-weight:700;color:var(--accent);background:rgba(99,102,241,0.1);padding:0.15rem 0.4rem;border-radius:4px;}
+.path-node.lead .path-count{color:#059669;}
+.path-node.lead .path-pct{color:#059669;background:rgba(16,185,129,0.1);}
+.path-node.dropped .path-pct{color:#dc2626;background:rgba(239,68,68,0.1);}
+.path-svg{position:absolute;top:0;left:0;pointer-events:none;z-index:0}
+.flow-path{transition:opacity 0.2s ease;}
+.path-note{font-size:.6rem;color:var(--muted);padding:.5rem 1.5rem;opacity:.8;font-weight:500;}
+/* Active calls */
+.ac-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem}
+@media(max-width:960px){.ac-row{grid-template-columns:1fr}}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:p 2s infinite;display:inline-block}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.4}}
+.bl{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);color:#059669;padding:.25rem .6rem;font-size:.72rem;border-radius:6px;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:.3rem}.bl:hover{background:rgba(16,185,129,.15)}
+/* Modal */
+.mo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);backdrop-filter:blur(6px);z-index:100;align-items:center;justify-content:center;padding:1rem}
+.mo.open{display:flex}
+.md{background:#ffffff;border:1px solid var(--border);border-radius:18px;box-shadow:0 25px 60px rgba(0,0,0,.15);width:100%;max-width:780px;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;animation:mi .2s ease}
+@keyframes mi{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+.mh{background:linear-gradient(135deg,#f8fafc,#f1f5f9);padding:.9rem 1.1rem;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);flex-shrink:0}
+.mh h3{font-size:.85rem;font-weight:600;display:flex;align-items:center;gap:.4rem}
+.mc{background:none;border:none;color:var(--muted);font-size:1rem;cursor:pointer;padding:.2rem .4rem;border-radius:6px}.mc:hover{color:var(--text)}
+.mb{padding:0;overflow-y:auto;flex:1}
+.mf{padding:.6rem 1rem;border-top:1px solid var(--border);display:flex;align-items:center;gap:.6rem;flex-shrink:0}
+/* Conversation summary */
+.conv-summary{padding:.8rem 1rem;background:linear-gradient(135deg,rgba(99,102,241,.04),rgba(168,85,247,.03));border-bottom:1px solid var(--border)}
+.conv-summary .cs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.5rem}
+.cs-item{display:flex;flex-direction:column;gap:.1rem}
+.cs-item .cs-label{font-size:.6rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
+.cs-item .cs-val{font-size:.78rem;font-weight:600;color:var(--text)}
+.cs-item .cs-val.opp{color:#059669}
+/* Conv journey mini path */
+.conv-journey{padding:.5rem 1rem;border-bottom:1px solid var(--border);background:#f8fafc}
+.conv-journey h4{font-size:.68rem;color:var(--muted);font-weight:600;margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.04em}
+.cj-path{display:flex;align-items:center;gap:.3rem;flex-wrap:wrap}
+.cj-node{display:inline-flex;align-items:center;gap:.25rem;padding:.2rem .5rem;border-radius:6px;font-size:.65rem;font-weight:600;background:#f1f5f9;border:1px solid var(--border);color:var(--muted)}
+.cj-node i{font-size:.55rem}
+.cj-node.fn{background:rgba(99,102,241,.08);border-color:rgba(99,102,241,.2);color:#4f46e5}
+.cj-node.result{background:rgba(16,185,129,.08);border-color:rgba(16,185,129,.2);color:#059669}
+.cj-arrow{color:var(--border2);font-size:.55rem}
+/* Chat messages */
+.chat-wrap{padding:.8rem 1rem}
+.cm{margin-bottom:.6rem;display:flex;flex-direction:column}
+.cm.u{align-items:flex-end}.cm.a{align-items:flex-start}.cm.f{align-items:center}
+.cm .b{max-width:82%;padding:.5rem .8rem;border-radius:10px;font-size:.78rem;line-height:1.45}
+.cm.u .b{background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.15);border-bottom-right-radius:3px}
+.cm.a .b{background:#f8fafc;border:1px solid var(--border);border-bottom-left-radius:3px}
+.cm.f .b{max-width:92%;padding:.35rem .65rem;border-radius:8px;font-size:.68rem;background:rgba(99,102,241,.05);border:1px solid rgba(99,102,241,.12);color:#4f46e5;font-family:monospace;word-break:break-all}
+.cm .mt{font-size:.62rem;color:var(--muted);margin-top:.15rem;padding:0 .2rem}
+/* Live audio */
+#live-wf{width:100%;border-radius:10px;background:#f0f2f5;display:block;border:1px solid var(--border)}
+</style>
+</head>
+<body>
+<div class="page">
+<header>
+  <div class="logo"><h1>🎙️ Travbridge Voice AI</h1><p>TCIL &amp; SOTC Monitor</p></div>
+  <div class="ha">
+    <div class="up"><i class="fas fa-user-circle"></i> <strong>{{ session.username }}</strong></div>
+    {% if role == 'admin' %}<a href="/admin/mappings" class="btn btn-g"><i class="fas fa-cog"></i> Mappings</a>{% endif %}
+    <a href="/logout" class="btn btn-d"><i class="fas fa-sign-out-alt"></i> Logout</a>
+  </div>
+</header>
+
+<!-- Active Calls split -->
+<div class="ac-row" {% if role == 'tcil' or role == 'sotc' %}style="grid-template-columns:1fr"{% endif %}>
+  {% if role == 'admin' or role == 'tcil' %}
+  <div><div class="panel-hdr"><div class="pt"><span class="dot"></span> <span class="badge bi">TCIL</span> Active Calls <span class="badge bi" id="ac-tcil">0</span></div></div>
+    <div class="card tbl"><table><thead><tr><th>App ID</th><th>Caller</th><th>Frames</th><th>Started</th><th></th></tr></thead><tbody id="ac-tcil-tb"><tr><td colspan="5" class="empty">No calls</td></tr></tbody></table></div>
+  </div>
+  {% endif %}
+  {% if role == 'admin' or role == 'sotc' %}
+  <div><div class="panel-hdr"><div class="pt"><span class="dot"></span> <span class="badge bg">SOTC</span> Active Calls <span class="badge bg" id="ac-sotc">0</span></div></div>
+    <div class="card tbl"><table><thead><tr><th>App ID</th><th>Caller</th><th>Frames</th><th>Started</th><th></th></tr></thead><tbody id="ac-sotc-tb"><tr><td colspan="5" class="empty">No calls</td></tr></tbody></table></div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- TCIL / SOTC panels -->
+<div class="cols {% if role == 'tcil' or role == 'sotc' %}cols-single{% endif %}">
+{% if role == 'admin' or role == 'tcil' %}
+<!-- TCIL -->
+<div>
+  <div class="panel-hdr"><div class="pt"><span class="badge bi">TCIL</span> Conversations <span id="tcil-tot" style="color:var(--muted);font-size:.72rem"></span></div></div>
+  <div class="card">
+    <div class="filters">
+      <div class="fg"><label>From</label><input type="date" id="tcil-from" value="2026-04-01"></div>
+      <div class="fg"><label>To</label><input type="date" id="tcil-to"></div>
+      <div class="fg"><label>Opp ID</label><input type="text" id="tcil-opp" placeholder="Search by Opp ID…" style="width:130px"></div>
+      <div class="fg"><label>Per page</label><select id="tcil-pp"><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div>
+      <button class="btn btn-p btn-s" onclick="loadP('tcil',1)"><i class="fas fa-search"></i> Fetch</button>
+    </div>
+    <div class="tab-row"><button class="tab-btn active" onclick="switchTab('tcil','daily')"><i class="fas fa-chart-bar"></i> Daily Calls</button><button class="tab-btn" onclick="switchTab('tcil','explore')"><i class="fas fa-project-diagram"></i> Exploration</button></div>
+    <div class="chart-box active" id="tcil-daily"><canvas id="tcil-chart"></canvas></div>
+    <div class="sankey-box" id="tcil-explore"><div class="loader"><i class="fas fa-spinner fa-spin"></i> Loading…</div></div>
+    <div class="tbl"><table><thead><tr><th>Conversation ID</th><th>Customer</th><th>Opp ID</th><th>Modified</th></tr></thead><tbody id="tcil-tb"><tr><td colspan="4" class="loader"><i class="fas fa-spinner fa-spin"></i> Loading…</td></tr></tbody></table></div>
+    <div class="pgc" id="tcil-pg"></div>
+  </div>
+</div>
+{% endif %}
+{% if role == 'admin' or role == 'sotc' %}
+<!-- SOTC -->
+<div>
+  <div class="panel-hdr"><div class="pt"><span class="badge bg">SOTC</span> Conversations <span id="sotc-tot" style="color:var(--muted);font-size:.72rem"></span></div></div>
+  <div class="card">
+    <div class="filters">
+      <div class="fg"><label>From</label><input type="date" id="sotc-from" value="2026-04-01"></div>
+      <div class="fg"><label>To</label><input type="date" id="sotc-to"></div>
+      <div class="fg"><label>Opp ID</label><input type="text" id="sotc-opp" placeholder="Search by Opp ID…" style="width:130px"></div>
+      <div class="fg"><label>Per page</label><select id="sotc-pp"><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div>
+      <button class="btn btn-p btn-s" onclick="loadP('sotc',1)"><i class="fas fa-search"></i> Fetch</button>
+    </div>
+    <div class="tab-row"><button class="tab-btn active" onclick="switchTab('sotc','daily')"><i class="fas fa-chart-bar"></i> Daily Calls</button><button class="tab-btn" onclick="switchTab('sotc','explore')"><i class="fas fa-project-diagram"></i> Exploration</button></div>
+    <div class="chart-box active" id="sotc-daily"><canvas id="sotc-chart"></canvas></div>
+    <div class="sankey-box" id="sotc-explore"><div class="loader"><i class="fas fa-spinner fa-spin"></i> Loading…</div></div>
+    <div class="tbl"><table><thead><tr><th>Conversation ID</th><th>Customer</th><th>Opp ID</th><th>Modified</th></tr></thead><tbody id="sotc-tb"><tr><td colspan="4" class="loader"><i class="fas fa-spinner fa-spin"></i> Loading…</td></tr></tbody></table></div>
+    <div class="pgc" id="sotc-pg"></div>
+  </div>
+</div>
+{% endif %}
+</div>
+</div>
+
+<!-- Conv detail modal -->
+<div class="mo" id="cm"><div class="md">
+  <div class="mh"><h3><i class="fas fa-comments" style="color:var(--accent)"></i> <span id="ct">—</span></h3><button class="mc" onclick="ccm()"><i class="fas fa-times"></i></button></div>
+  <div class="mb" id="cb"><div class="loader"><i class="fas fa-spinner fa-spin"></i></div></div>
+  <div class="mf"><audio id="ca" controls style="height:32px;flex:1;border-radius:6px"></audio><span id="as" style="font-size:.7rem;color:var(--muted)"></span></div>
+</div></div>
+
+<!-- Live audio modal -->
+<div class="mo" id="lm"><div class="md" style="max-width:780px">
+  <div class="mh"><h3><i class="fas fa-broadcast-tower" style="color:var(--accent)"></i> Live — <span id="ll">—</span></h3><button class="mc" onclick="clm()"><i class="fas fa-times"></i></button></div>
+  <div class="mb"><div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.5rem"><span id="ss" class="badge" style="background:var(--card2);color:var(--muted)"><i class="fas fa-hourglass-half"></i> Connecting…</span></div><canvas id="live-wf" width="700" height="110"></canvas></div>
+</div></div>
+
+<script>
+const ROLE = '{{ role }}';
+const today=new Date().toISOString().slice(0,10);
+const tcilTo=document.getElementById('tcil-to');if(tcilTo)tcilTo.value=today;
+const sotcTo=document.getElementById('sotc-to');if(sotcTo)sotcTo.value=today;
+let charts={tcil:null,sotc:null};
+let lastConvs={tcil:[],sotc:[]};  // store loaded conversations for client-side opp search
+
+function sid(id){const p=id.split('_');return p.length>=2?p[1]:'—';}
+function fd(d){if(!d)return'—';try{return new Date(d).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}catch(e){return d}}
+function eh(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+// Tab switching
+function switchTab(type,tab){
+  const card=document.getElementById(type+'-daily').closest('.card');
+  card.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  card.querySelectorAll('.chart-box,.sankey-box').forEach(b=>b.classList.remove('active'));
+  if(tab==='daily'){
+    document.getElementById(type+'-daily').classList.add('active');
+    card.querySelectorAll('.tab-btn')[0].classList.add('active');
+  }else{
+    document.getElementById(type+'-explore').classList.add('active');
+    card.querySelectorAll('.tab-btn')[1].classList.add('active');
+    loadExploration(type);
+  }
+}
+
+// Exploration Pipeline
+let expData={tcil:null,sotc:null};
+async function loadExploration(type){
+  const box=document.getElementById(type+'-explore');
+  box.innerHTML='<div class="loader"><i class="fas fa-spinner fa-spin"></i> Loading exploration data\u2026</div>';
+  const from=document.getElementById(type+'-from').value;
+  const to=document.getElementById(type+'-to').value;
+  try{
+    const body={chat_started_from:from,chat_started_to:to,chat_channel:'VoiceBot',only_tool_conversations:false};
+    const r=await fetch('/api/'+type+'/exploration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.error){box.innerHTML='<div class="empty" style="color:#ef4444">'+d.error+'</div>';return;}
+    expData[type]=d;
+    renderPipeline(type,d);
+  }catch(e){box.innerHTML='<div class="empty" style="color:#ef4444">Failed to load</div>';}
+}
+
+function renderPipeline(type,data){
+  const box=document.getElementById(type+'-explore');
+  const steps=data.steps||[];
+  const flows=data.flows||[];
+  const maxCount=steps.length&&steps[0].nodes.length?steps[0].nodes[0].count:1;
+  const colors=['#6366f1','#818cf8','#a78bfa','#c084fc','#e879f9','#f472b6','#fb923c','#94a3b8'];
+
+    let html='<div class="path-wrap"><div class="path-explorer" id="'+type+'-pex">';
+    steps.forEach((step,si)=>{
+      html+=`<div class="path-col" data-step="${si}">`;
+      html+=`<div class="path-col-hdr">${step.label}</div>`;
+      step.nodes.forEach((nd,ni)=>{
+        const isMore=nd.name.startsWith('+');
+        const isLead=nd.name==='Lead Created';
+        const isDropped=nd.name==='Dropped';
+        const cssClass = isLead ? ' lead' : (isDropped ? ' dropped' : (isMore ? ' more' : ''));
+        const pct = Math.round((nd.count/maxCount)*100);
+        
+        html+=`<div class="path-node${cssClass}" data-step="${si}" data-node="${ni}" id="${type}-pn-${si}-${ni}" onclick="filterByNode('${type}',${si},${ni})">
+            <div class="path-name">
+                <span>${nd.name.replace(/_/g,' ')}</span>
+                ${isLead ? '<i class="fas fa-check-circle" style="color:#10b981"></i>' : (isDropped ? '<i class="fas fa-times-circle" style="color:#ef4444"></i>' : '')}
+            </div>
+            <div class="path-stats">
+                <span class="path-count">${nd.count.toLocaleString()}</span>
+                <span class="path-pct">${pct}%</span>
+            </div>
+        </div>`;
+      });
+      html+=`</div>`;
+    });
+    html+='</div></div>';
+    if(data.sampled<data.total) html+=`<div class="path-note"><i class="fas fa-info-circle"></i> Sampled ${data.sampled.toLocaleString()} of ${data.total.toLocaleString()} conversations. Percentages based on starting volume.</div>`;
+    box.innerHTML=html;
+
+  // Draw flow lines after render
+  requestAnimationFrame(()=>drawFlows(type,steps,flows));
+}
+
+function drawFlows(type,steps,flows){
+  const pex=document.getElementById(type+'-pex');
+  if(!pex)return;
+  const rect=pex.getBoundingClientRect();
+  // Remove old svg
+  const old=pex.querySelector('.path-svg');
+  if(old)old.remove();
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.classList.add('path-svg');
+  svg.setAttribute('width',pex.scrollWidth);
+  svg.setAttribute('height',pex.scrollHeight);
+  svg.style.width=pex.scrollWidth+'px';
+  svg.style.height=pex.scrollHeight+'px';
+
+  // Create a defs block for gradients
+  const defs=document.createElementNS('http://www.w3.org/2000/svg','defs');
+  const linearGradient=document.createElementNS('http://www.w3.org/2000/svg','linearGradient');
+  linearGradient.setAttribute('id','flowGradient');
+  linearGradient.setAttribute('x1','0%');
+  linearGradient.setAttribute('y1','0%');
+  linearGradient.setAttribute('x2','100%');
+  linearGradient.setAttribute('y2','0%');
+  const stop1=document.createElementNS('http://www.w3.org/2000/svg','stop');
+  stop1.setAttribute('offset','0%');
+  stop1.setAttribute('stop-color','rgba(99,102,241,0.15)');
+  const stop2=document.createElementNS('http://www.w3.org/2000/svg','stop');
+  stop2.setAttribute('offset','100%');
+  stop2.setAttribute('stop-color','rgba(167,139,250,0.25)');
+  linearGradient.appendChild(stop1);
+  linearGradient.appendChild(stop2);
+  defs.appendChild(linearGradient);
+  svg.appendChild(defs);
+
+  // Find maximum Y coordinate of nodes to route arcs underneath
+  let maxY = 0;
+  pex.querySelectorAll('.path-node').forEach(n => {
+      maxY = Math.max(maxY, n.getBoundingClientRect().bottom - rect.top);
+  });
+  
+  // Ensure the SVG has enough height for the bottom arcs
+  const neededHeight = Math.max(pex.scrollHeight, maxY + 150);
+  svg.setAttribute('height', neededHeight);
+  svg.style.height=neededHeight+'px';
+  pex.style.paddingBottom = '150px';
+
+  flows.forEach((f, fIdx)=>{
+    const fromEl=document.getElementById(type+'-pn-'+f.fs+'-'+f.fi);
+    const toEl=document.getElementById(type+'-pn-'+f.ts+'-'+f.ti);
+    if(!fromEl||!toEl)return;
+    const fr=fromEl.getBoundingClientRect();
+    const tr=toEl.getBoundingClientRect();
+    const x1=fr.right-rect.left;
+    const y1=fr.top+fr.height/2-rect.top;
+    const x2=tr.left-rect.left;
+    const y2=tr.top+tr.height/2-rect.top;
+    const maxC=steps[0].nodes[0].count||1;
+    // Thicker paths, max 24px, min 2px
+    const sw=Math.max(2,Math.min(24,(f.c/maxC)*30));
+    
+    // Highlight paths that go to 'Lead Created'
+    const isLeadPath = (f.ts === steps.length - 1) && steps[f.ts].nodes[f.ti].name === 'Lead Created';
+    const isDroppedPath = (f.ts === steps.length - 1) && steps[f.ts].nodes[f.ti].name === 'Dropped';
+    
+    const isLongJump = (f.ts - f.fs) > 1;
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+    const mx=(x1+x2)/2;
+    
+    let dPath = `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+    if (isLongJump) {
+        // Route path underneath the cards to avoid crossing them
+        const dipY = maxY + 30 + ((f.ts - f.fs) * 15); // Stack the arcs slightly based on distance
+        dPath = `M${x1},${y1} C${x1+60},${y1} ${x1+60},${dipY} ${mx},${dipY} C${x2-60},${dipY} ${x2-60},${y2} ${x2},${y2}`;
+    }
+    
+    path.setAttribute('d', dPath);
+    path.setAttribute('fill','none');
+    
+    if (isLeadPath) {
+        path.setAttribute('stroke','rgba(16,185,129,0.3)');
+        path.setAttribute('data-orig-stroke', 'rgba(16,185,129,0.3)');
+    } else if (isDroppedPath) {
+        path.setAttribute('stroke','rgba(239,68,68,0.15)');
+        path.setAttribute('data-orig-stroke', 'rgba(239,68,68,0.15)');
+    } else {
+        path.setAttribute('stroke','url(#flowGradient)');
+        path.setAttribute('data-orig-stroke', 'url(#flowGradient)');
+    }
+    
+    path.setAttribute('stroke-width',sw);
+    path.setAttribute('class', 'flow-path');
+    path.setAttribute('data-flow-idx', fIdx);
+    
+    svg.appendChild(path);
+  });
+  
+  // Add hover functionality to nodes to highlight ENTIRE connected path
+  pex.querySelectorAll('.path-node').forEach(node => {
+      node.addEventListener('mouseenter', (e) => {
+          const step = parseInt(node.getAttribute('data-step'));
+          const nidx = parseInt(node.getAttribute('data-node'));
+          const selectedNodeIds = new Set(steps[step].nodes[nidx].ids || []);
+          const nodeName = steps[step].nodes[nidx].name;
+          
+          let highlightColor = 'rgba(99,102,241, 0.8)'; // Bright indigo for intermediate steps
+          if (nodeName === 'Lead Created') highlightColor = 'rgba(16,185,129, 0.8)'; // Bright green
+          if (nodeName === 'Dropped') highlightColor = 'rgba(239,68,68, 0.6)'; // Bright red
+          
+          // Dim all paths
+          pex.querySelectorAll('.flow-path').forEach(p => {
+              p.style.opacity = '0.05';
+              p.setAttribute('stroke', p.getAttribute('data-orig-stroke'));
+          });
+          
+          // Highlight full path segments that carry these conversations
+          pex.querySelectorAll('.flow-path').forEach(p => {
+              const fIdx = parseInt(p.getAttribute('data-flow-idx'));
+              const f = flows[fIdx];
+              if (f && f.ids) {
+                  // If this flow segment contains ANY conversation from the selected node, highlight it
+                  const hasIntersection = f.ids.some(id => selectedNodeIds.has(id));
+                  if (hasIntersection) {
+                      p.style.opacity = '1';
+                      p.setAttribute('stroke', highlightColor);
+                  }
+              }
+          });
+      });
+      node.addEventListener('mouseleave', () => {
+          pex.querySelectorAll('.flow-path').forEach(p => {
+              p.style.opacity = '1';
+              p.setAttribute('stroke', p.getAttribute('data-orig-stroke'));
+          });
+      });
+  });
+  pex.appendChild(svg);
+}
+
+function filterByNode(type,stepIdx,nodeIdx){
+  const data=expData[type];
+  if(!data)return;
+  const node=data.steps[stepIdx].nodes[nodeIdx];
+  const convs=data.conversations||{};
+  // Highlight
+  const pex=document.getElementById(type+'-pex');
+  pex.querySelectorAll('.path-node').forEach(n=>n.classList.remove('active'));
+  document.getElementById(type+'-pn-'+stepIdx+'-'+nodeIdx).classList.add('active');
+  // Filter table
+  const tb=document.getElementById(type+'-tb');
+  const pg=document.getElementById(type+'-pg');
+  const ids=node.ids||[];
+  if(!ids.length){tb.innerHTML='<tr><td colspan="4" class="empty"><i class="fas fa-inbox"></i>No conversations</td></tr>';pg.innerHTML='';return;}
+   tb.innerHTML=ids.map(cid=>{
+    const c=convs[cid]||{};
+    return `<tr onclick="oc('${cid}','${type}')">
+      <td style="font-family:monospace;font-size:.72rem;color:#4f46e5">${cid.length>26?cid.slice(0,26)+'\u2026':cid}</td>
+      <td>${sid(cid)}</td><td style="color:${c.opportunity_id?'#059669':'var(--muted)'}">${c.opportunity_id||'\u2014'}</td>
+      <td style="color:var(--muted);font-size:.72rem">${fd(c.chat_modified)}</td></tr>`;
+  }).join('');
+  pg.innerHTML=`<span><i class="fas fa-filter" style="color:var(--accent)"></i> ${ids.length} conversations \u2022 ${node.name.replace(/_/g,' ')}</span><button class="btn btn-g btn-s" onclick="loadP('${type}',1)"><i class="fas fa-times"></i> Clear filter</button>`;
+}
+// Build daily chart from conversation list dates
+function buildChart(type,convs){
+  const cv=document.getElementById(type+'-chart');
+  if(charts[type]){charts[type].destroy();charts[type]=null;}
+  const dd={};
+  convs.forEach(c=>{if(c.chat_modified){const d=c.chat_modified.slice(0,10);dd[d]=(dd[d]||0)+1;}});
+  const keys=Object.keys(dd).sort();
+  if(!keys.length)return;
+  const color=type==='tcil'?'rgba(99,102,241,.6)':'rgba(16,185,129,.6)';
+  const bc=type==='tcil'?'#4f46e5':'#059669';
+  charts[type]=new Chart(cv,{type:'bar',data:{labels:keys,datasets:[{label:'Calls',data:keys.map(k=>dd[k]),backgroundColor:color,borderColor:bc,borderWidth:1,borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,grid:{color:'rgba(0,0,0,.06)'},ticks:{color:'#64748b',font:{size:9}}},x:{grid:{display:false},ticks:{color:'#64748b',maxRotation:45,font:{size:8}}}},plugins:{legend:{display:false}}}});
+}
+
+// Fetch daily counts from server-side aggregation (handles any volume)
+async function loadChart(type){
+  const fromEl=document.getElementById(type+'-from');
+  const toEl=document.getElementById(type+'-to');
+  if(!fromEl||!toEl)return;
+  const from=fromEl.value, to=toEl.value;
+  try{
+    const body={chat_started_from:from,chat_started_to:to,chat_channel:'VoiceBot',only_tool_conversations:false};
+    const r=await fetch('/api/'+type+'/daily_counts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.daily){
+      const keys=Object.keys(d.daily).sort();
+      const cv=document.getElementById(type+'-chart');
+      if(charts[type]){charts[type].destroy();charts[type]=null;}
+      if(!keys.length)return;
+      const color=type==='tcil'?'rgba(99,102,241,.6)':'rgba(16,185,129,.6)';
+      const bc=type==='tcil'?'#4f46e5':'#059669';
+      charts[type]=new Chart(cv,{type:'bar',data:{labels:keys,datasets:[{label:'Calls',data:keys.map(k=>d.daily[k]),backgroundColor:color,borderColor:bc,borderWidth:1,borderRadius:4}]},
+        options:{responsive:true,maintainAspectRatio:false,
+          onClick:(evt,elements)=>{
+            if(elements.length){
+              const idx=elements[0].index;
+              const clickedDate=keys[idx];
+              filterByDate(type,clickedDate);
+            }
+          },
+          scales:{y:{beginAtZero:true,grid:{color:'rgba(0,0,0,.06)'},ticks:{color:'#64748b',font:{size:9}}},x:{grid:{display:false},ticks:{color:'#64748b',maxRotation:45,font:{size:8}}}},plugins:{legend:{display:false}}}});
+    }
+  }catch(e){}
+}
+
+// Filter conversation list by clicked chart date — fetches from API for that day
+async function filterByDate(type,date){
+  const url=type==='tcil'?'/api/tcil/conversations':'/api/sotc/conversations';
+  const tb=document.getElementById(type+'-tb');
+  const pg=document.getElementById(type+'-pg');
+  if(!tb)return;
+  tb.innerHTML='<tr><td colspan="4" class="loader"><i class="fas fa-spinner fa-spin"></i> Loading conversations for '+date+'…</td></tr>';
+  try{
+    const body={chat_started_from:date,chat_started_to:date,chat_channel:'VoiceBot',only_tool_conversations:false,page:1,count:200};
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    const convs=d.conversations||[];
+    if(!convs.length){tb.innerHTML='<tr><td colspan="4" class="empty"><i class="fas fa-inbox"></i>No conversations on '+date+'</td></tr>';pg.innerHTML='';return;}
+    convs.sort((a,b)=>(b.chat_modified||'').localeCompare(a.chat_modified||''));
+    tb.innerHTML=convs.map(c=>`<tr onclick="oc('${c.conversationId}','${type}')">
+      <td style="font-family:monospace;font-size:.72rem;color:#4f46e5">${c.conversationId.length>26?c.conversationId.slice(0,26)+'…':c.conversationId}</td>
+      <td>${sid(c.conversationId)}</td><td style="color:${c.opportunity_id?'#059669':'var(--muted)'}">${c.opportunity_id||'—'}</td>
+      <td style="color:var(--muted);font-size:.72rem">${fd(c.chat_modified)}</td></tr>`).join('');
+    pg.innerHTML=`<span><i class="fas fa-calendar-day" style="color:var(--accent)"></i> ${convs.length} conversations on ${date}</span><button class="btn btn-g btn-s" onclick="loadP('${type}',1)"><i class="fas fa-times"></i> Clear filter</button>`;
+  }catch(e){tb.innerHTML='<tr><td colspan="4" class="empty">Failed to load</td></tr>';}
+}
+
+async function loadP(type,page){
+  const fromEl=document.getElementById(type+'-from');
+  const toEl=document.getElementById(type+'-to');
+  const ppEl=document.getElementById(type+'-pp');
+  if(!fromEl||!toEl||!ppEl)return;
+  const url=type==='tcil'?'/api/tcil/conversations':'/api/sotc/conversations';
+  const from=fromEl.value, to=toEl.value;
+  const pp=parseInt(ppEl.value);
+  const oppSearch=(document.getElementById(type+'-opp')||{}).value||'';
+  const tb=document.getElementById(type+'-tb');
+  const pg=document.getElementById(type+'-pg');
+  const tot=document.getElementById(type+'-tot');
+  if(!tb)return;
+  tb.innerHTML='<tr><td colspan="4" class="loader"><i class="fas fa-spinner fa-spin"></i> Loading…</td></tr>';
+  // On page 1, also refresh chart with full data
+  if(page===1) loadChart(type);
+  try{
+    const body={chat_started_from:from,chat_started_to:to,chat_channel:'VoiceBot',only_tool_conversations:false,page:page,count:pp};
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.error){tb.innerHTML='<tr><td colspan="4" class="empty">'+d.error+'</td></tr>';return;}
+    if(tot)tot.textContent='('+d.total+' total)';
+    let convs=d.conversations||[];
+    lastConvs[type]=convs;  // store for date-click filtering
+    // Client-side Opp ID filter
+    if(oppSearch){
+      const q=oppSearch.toLowerCase();
+      convs=convs.filter(c=>(c.opportunity_id||'').toLowerCase().includes(q));
+    }
+    if(!convs.length){tb.innerHTML='<tr><td colspan="4" class="empty"><i class="fas fa-inbox"></i>No conversations</td></tr>';pg.innerHTML='';return;}
+    tb.innerHTML=convs.map(c=>`<tr onclick="oc('${c.conversationId}','${type}')">
+      <td style="font-family:monospace;font-size:.72rem;color:#4f46e5">${c.conversationId.length>26?c.conversationId.slice(0,26)+'…':c.conversationId}</td>
+      <td>${sid(c.conversationId)}</td><td style="color:${c.opportunity_id?'#059669':'var(--muted)'}">${c.opportunity_id||'—'}</td>
+      <td style="color:var(--muted);font-size:.72rem">${fd(c.chat_modified)}</td></tr>`).join('');
+    const tp=Math.ceil(d.total/pp);
+    pg.innerHTML=`<span>Page ${page}/${tp}</span><div style="display:flex;gap:.4rem">
+      ${page>1?`<button class="btn btn-g btn-s" onclick="loadP('${type}',${page-1})">‹</button>`:''}
+      ${page<tp?`<button class="btn btn-g btn-s" onclick="loadP('${type}',${page+1})">›</button>`:''}
+    </div>`;
+  }catch(e){tb.innerHTML='<tr><td colspan="4" class="empty">Network error</td></tr>';}
+}
+
+async function oc(cid,type){
+  document.getElementById('cm').classList.add('open');
+  document.getElementById('ct').textContent=cid;
+  const bd=document.getElementById('cb');
+  bd.innerHTML='<div class="loader" style="padding:2rem"><i class="fas fa-spinner fa-spin"></i> Loading conversation\u2026</div>';
+  const au=document.getElementById('ca');au.src='';au.style.display='none';
+  document.getElementById('as').textContent='Loading audio\u2026';
+  fetch('/api/audio_url/'+cid).then(r=>r.json()).then(d=>{if(d.url){au.src=d.url;au.style.display='block';document.getElementById('as').textContent='';}else document.getElementById('as').textContent='No audio';}).catch(()=>{document.getElementById('as').textContent='Unavailable';});
+  const url=type==='tcil'?'/api/tcil/conversation':'/api/sotc/conversation';
+  try{
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversationId:cid})});
+    const d=await r.json();
+    const conv=d.conversation||{};
+    const allMsgs=conv.conversation||[];
+    const customerId=conv.customerId||sid(cid);
+    const oppId=conv.opportunity_id||'';
+    const chatName=conv.chat_name||'';
+    // Extract function calls for journey
+    const funcCalls=allMsgs.filter(m=>m.role==='function_call'&&m.name);
+    const uniqueFuncs=[];const seen=new Set();
+    funcCalls.forEach(m=>{if(!seen.has(m.name)){seen.add(m.name);uniqueFuncs.push(m.name);}});
+    // Message counts
+    const userMsgs=allMsgs.filter(m=>m.role==='user').length;
+    const asstMsgs=allMsgs.filter(m=>m.role==='assistant').length;
+    const firstTime=allMsgs.length?allMsgs[0].chat_time:'';
+    const lastTime=allMsgs.length?allMsgs[allMsgs.length-1].chat_time:'';
+    // Build summary
+    let html=`<div class="conv-summary"><div class="cs-grid">
+      <div class="cs-item"><span class="cs-label">Customer</span><span class="cs-val"><i class="fas fa-user" style="color:var(--accent);font-size:.7rem"></i> ${eh(customerId)}</span></div>
+      <div class="cs-item"><span class="cs-label">Company</span><span class="cs-val"><span class="badge ${type==='tcil'?'bi':'bg'}">${type.toUpperCase()}</span></span></div>
+      <div class="cs-item"><span class="cs-label">Opportunity</span><span class="cs-val${oppId?' opp':''}">${oppId?'<i class="fas fa-check-circle" style="font-size:.7rem"></i> '+eh(oppId):'<span style="color:var(--muted)">\u2014 None</span>'}</span></div>
+      <div class="cs-item"><span class="cs-label">Messages</span><span class="cs-val">${userMsgs} <span style="color:var(--muted);font-size:.65rem">user</span> \u00B7 ${asstMsgs} <span style="color:var(--muted);font-size:.65rem">bot</span></span></div>
+      <div class="cs-item"><span class="cs-label">Started</span><span class="cs-val" style="font-size:.72rem">${fd(firstTime)}</span></div>
+      <div class="cs-item"><span class="cs-label">Ended</span><span class="cs-val" style="font-size:.72rem">${fd(lastTime)}</span></div>
+    </div>`;
+    
+    const displaySummary = conv.chat_summary || conv.summary || (conv.opportunity_payload && conv.opportunity_payload.summary) || '';
+    if (displaySummary) {
+        html += `<div style="margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid rgba(255,255,255,0.05);">
+            <div style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem;">AI Summary</div>
+            <div style="font-size: 0.85rem; color: #e2e8f0; line-height: 1.4;">${eh(displaySummary)}</div>
+        </div>`;
+    }
+    
+    html += `</div>`;
+    // Journey path
+    if(uniqueFuncs.length){
+      html+=`<div class="conv-journey"><h4><i class="fas fa-route"></i> Conversation Journey</h4><div class="cj-path">
+        <div class="cj-node"><i class="fas fa-play-circle"></i> Start</div>`;
+      uniqueFuncs.forEach(fn=>{
+        html+=`<span class="cj-arrow"><i class="fas fa-chevron-right"></i></span>
+          <div class="cj-node fn"><i class="fas fa-code"></i> ${fn.replace(/_/g,' ')}</div>`;
+      });
+      if(oppId){
+        html+=`<span class="cj-arrow"><i class="fas fa-chevron-right"></i></span>
+          <div class="cj-node result"><i class="fas fa-trophy"></i> Opp Created</div>`;
+      }
+      html+=`</div></div>`;
+    }
+    // Chat messages (include function_call as tool nodes)
+    const displayMsgs=allMsgs.filter(m=>['user','assistant','function_call'].includes(m.role));
+    html+='<div class="chat-wrap">';
+    if(!displayMsgs.length) html+='<div class="empty">No messages</div>';
+    else displayMsgs.forEach(m=>{
+      if(m.role==='function_call'){
+        const fname=m.name||'function';
+        const args=m.arguments||m.content||'';
+        let argPreview=args;
+        try{const p=JSON.parse(args);argPreview=Object.entries(p).map(([k,v])=>`${k}: ${v}`).join(', ');}catch(e){}
+        if(argPreview.length>120) argPreview=argPreview.slice(0,120)+'\u2026';
+        html+=`<div class="cm f"><div class="b"><i class="fas fa-code" style="margin-right:.3rem"></i><strong>${fname}</strong>(${eh(argPreview)})</div><div class="mt">${fd(m.chat_time)}</div></div>`;
+      }else{
+        const cls=m.role==='user'?'u':'a';
+        const icon=m.role==='user'?'\uD83D\uDC64':'\uD83E\uDD16';
+        html+=`<div class="cm ${cls}"><div class="b">${icon} ${eh(m.content)}</div><div class="mt">${fd(m.chat_time)}</div></div>`;
+      }
+    });
+    html+='</div>';
+    bd.innerHTML=html;
+  }catch(e){bd.innerHTML='<div class="empty" style="padding:2rem">Failed to load conversation</div>';}
+}
+function ccm(){document.getElementById('cm').classList.remove('open');document.getElementById('ca').pause();}
+document.getElementById('cm').addEventListener('click',function(e){if(e.target===this)ccm();});
+
+// Active calls — split by company field from agent_mapping
+async function fetchSessions(){
+  try{
+    const r=await fetch('/sessions');const data=await r.json();
+    const tcil=data.filter(s=>s.company==='TCIL');
+    const sotc=data.filter(s=>s.company==='SOTC');
+    const tcilEl=document.getElementById('ac-tcil');if(tcilEl)tcilEl.textContent=tcil.length;
+    const sotcEl=document.getElementById('ac-sotc');if(sotcEl)sotcEl.textContent=sotc.length;
+    if(document.getElementById('ac-tcil-tb'))renderAC('ac-tcil-tb',tcil);
+    if(document.getElementById('ac-sotc-tb'))renderAC('ac-sotc-tb',sotc);
+  }catch(e){}
+}
+function renderAC(id,arr){
+  const tb=document.getElementById(id);
+  if(!tb)return;
+  if(!arr.length){tb.innerHTML='<tr><td colspan="5" class="empty">No calls</td></tr>';return;}
+  tb.innerHTML=arr.map(s=>`<tr><td style="font-family:monospace;font-size:.72rem;color:#4f46e5">${s.app_id}</td><td>${s.caller_id}</td><td>${s.frames_sent.toLocaleString()}</td>
+    <td style="font-size:.72rem;color:var(--muted)">${s.started}</td>
+    <td><button class="bl" onclick="event.stopPropagation();openLive('${s.session_id}','${s.app_id} · ${s.caller_id}')"><i class="fas fa-headphones-alt"></i> Listen</button></td></tr>`).join('');
+}
+fetchSessions();setInterval(fetchSessions,5000);
+
+// Live audio
+let SR=16000;const JT=.15;let es=null,ax=null,an=null,cg=null,ag=null,cu=0,au2=0,rf=null,io=false;
+function stp(){if(es){es.close();es=null;}if(ax){ax.close().catch(()=>{});ax=null;an=null;}if(rf){cancelAnimationFrame(rf);rf=null;}io=false;}
+function sc(b,g,u){if(!ax)return u;if(ax.state==='suspended')ax.resume();try{const bn=atob(b),by=new Uint8Array(bn.length);for(let i=0;i<bn.length;i++)by[i]=bn.charCodeAt(i);const i1=new Int16Array(by.buffer);if(!i1.length)return u;const f=new Float32Array(i1.length);for(let i=0;i<i1.length;i++)f[i]=i1[i]/32768;const bf=ax.createBuffer(1,f.length,SR);bf.getChannelData(0).set(f);const sr=ax.createBufferSource();sr.buffer=bf;sr.connect(g);const n=ax.currentTime;if(u<n-.3)u=n;const a=Math.max(n+JT,u);sr.start(a);return a+bf.duration;}catch(e){return u;}}
+function dw(){const cv=document.getElementById('live-wf'),c=cv.getContext('2d');if(!an){c.fillStyle='#f0f2f5';c.fillRect(0,0,cv.width,cv.height);return;}rf=requestAnimationFrame(dw);const d=new Uint8Array(an.frequencyBinCount);an.getByteTimeDomainData(d);c.fillStyle='#f0f2f5';c.fillRect(0,0,cv.width,cv.height);c.lineWidth=2;c.strokeStyle='#4f46e5';c.beginPath();const sw=cv.width/d.length;let x=0;for(let i=0;i<d.length;i++){const y=(d[i]/128)*(cv.height/2);i?c.lineTo(x,y):c.moveTo(x,y);x+=sw;}c.lineTo(cv.width,cv.height/2);c.stroke();}
+function openLive(sid,label){stp();document.getElementById('ll').textContent=label;document.getElementById('ss').innerHTML='<i class="fas fa-hourglass-half"></i> Connecting…';document.getElementById('ss').className='badge';document.getElementById('ss').style.cssText='background:var(--card2);color:var(--muted)';document.getElementById('lm').classList.add('open');ax=new AudioContext();an=ax.createAnalyser();an.fftSize=2048;cg=ax.createGain();ag=ax.createGain();cg.connect(an);ag.connect(an);an.connect(ax.destination);cu=au2=ax.currentTime+JT;dw();es=new EventSource('/audio_stream/'+sid);es.onmessage=function(ev){try{const m=JSON.parse(ev.data);if(m.type==='init'){SR=m.sampleRate||16000;io=true;cu=au2=ax.currentTime+JT;document.getElementById('ss').innerHTML='<i class="fas fa-broadcast-tower"></i> Live ('+SR+'Hz)';document.getElementById('ss').className='badge bg';return;}if(m.type==='ended'){document.getElementById('ss').innerHTML='<i class="fas fa-phone-slash"></i> Ended';stp();setTimeout(clm,2000);return;}if(!ax||!io)return;if(m.r==='c')cu=sc(m.d,cg,cu);else au2=sc(m.d,ag,au2);}catch(e){}};es.onerror=function(){document.getElementById('ss').innerHTML='<i class="fas fa-sync-alt"></i> Reconnecting…';};}
+function clm(){stp();document.getElementById('lm').classList.remove('open');}
+document.getElementById('lm').addEventListener('click',function(e){if(e.target===this)clm();});
+
+// Exploration refresh on date change
+['tcil','sotc'].forEach(type=>{
+  const fromEl=document.getElementById(type+'-from');
+  const toEl=document.getElementById(type+'-to');
+  if(fromEl) fromEl.addEventListener('change',()=>{
+    const exploreBox=document.getElementById(type+'-explore');
+    if(exploreBox && exploreBox.classList.contains('active')) loadExploration(type);
+  });
+  if(toEl) toEl.addEventListener('change',()=>{
+    const exploreBox=document.getElementById(type+'-explore');
+    if(exploreBox && exploreBox.classList.contains('active')) loadExploration(type);
+  });
+});
+
+// Opp ID search — filter on Enter key or input
+['tcil','sotc'].forEach(type=>{
+  const oppEl=document.getElementById(type+'-opp');
+  if(oppEl){
+    let debounce=null;
+    oppEl.addEventListener('input',()=>{
+      clearTimeout(debounce);
+      debounce=setTimeout(()=>{
+        const q=oppEl.value.toLowerCase();
+        const convs=lastConvs[type]||[];
+        if(!q){loadP(type,1);return;}
+        const filtered=convs.filter(c=>(c.opportunity_id||'').toLowerCase().includes(q));
+        const tb=document.getElementById(type+'-tb');
+        const pg=document.getElementById(type+'-pg');
+        if(!tb)return;
+        if(!filtered.length){tb.innerHTML='<tr><td colspan="4" class="empty"><i class="fas fa-inbox"></i>No matching conversations</td></tr>';pg.innerHTML='';return;}
+        tb.innerHTML=filtered.map(c=>`<tr onclick="oc('${c.conversationId}','${type}')">
+          <td style="font-family:monospace;font-size:.72rem;color:#4f46e5">${c.conversationId.length>26?c.conversationId.slice(0,26)+'…':c.conversationId}</td>
+          <td>${sid(c.conversationId)}</td><td style="color:#059669">${c.opportunity_id||'—'}</td>
+          <td style="color:var(--muted);font-size:.72rem">${fd(c.chat_modified)}</td></tr>`).join('');
+        pg.innerHTML=`<span><i class="fas fa-filter" style="color:var(--accent)"></i> ${filtered.length} results for "${oppEl.value}"</span><button class="btn btn-g btn-s" onclick="document.getElementById('${type}-opp').value='';loadP('${type}',1)"><i class="fas fa-times"></i> Clear</button>`;
+      },300);
+    });
+  }
+});
+
+// Role-based initial load
+if(ROLE==='admin'||ROLE==='tcil') loadP('tcil',1);
+if(ROLE==='admin'||ROLE==='sotc') loadP('sotc',1);
+</script>
+</body>
+</html>

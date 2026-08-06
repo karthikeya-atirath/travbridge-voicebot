@@ -1,0 +1,15 @@
+keys:
+  APIURXkwnDjd8Pa: trAsT9C033OZleHJ0tMNFjunov4k3mmmnjBWfHvq5Lo
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: true
+
+redis:
+  address: "127.0.0.1:6379"
+  password: ""
+
+turn:
+  enabled: true
+  udp_port: 443

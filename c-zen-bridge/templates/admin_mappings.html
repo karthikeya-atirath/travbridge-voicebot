@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Mappings · Travbridge Voice AI</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg:#f0f2f5;--card:#ffffff;--card2:#f8fafc;--border:#e2e8f0;--border2:#cbd5e1;
+      --text:#1e293b;--muted:#64748b;--accent:#6366f1;--danger:#ef4444;--green:#10b981;--radius:14px;
+    }
+    body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:2rem 1.5rem}
+    .page{max-width:960px;margin:0 auto}
+
+    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:2rem;flex-wrap:wrap;gap:1rem}
+    .logo h1{font-size:1.5rem;font-weight:700;background:linear-gradient(90deg,#4f46e5,#7c3aed);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+    .logo p{color:var(--muted);font-size:0.825rem;margin-top:0.15rem}
+
+    .btn{padding:0.55rem 1.1rem;border-radius:8px;font-weight:500;font-size:0.85rem;font-family:inherit;cursor:pointer;transition:all 0.2s;display:inline-flex;align-items:center;gap:0.45rem;border:1px solid transparent;text-decoration:none}
+    .btn-ghost{background:var(--card);border-color:var(--border);color:var(--muted)}
+    .btn-ghost:hover{background:var(--card2);color:var(--text)}
+    .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .btn-primary:hover{background:#4f46e5;transform:translateY(-1px)}
+    .btn-danger-soft{background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.2);color:#dc2626}
+    .btn-danger-soft:hover{background:rgba(239,68,68,0.15)}
+    .btn-warning-soft{background:rgba(234,179,8,0.08);border-color:rgba(234,179,8,0.2);color:#a16207}
+    .btn-warning-soft:hover{background:rgba(234,179,8,0.15)}
+    .btn-sm{padding:0.3rem 0.7rem;font-size:0.78rem}
+
+    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 2px 8px rgba(0,0,0,0.06)}
+
+    .flash{padding:0.75rem 1rem;border-radius:10px;margin-bottom:1.5rem;font-size:0.875rem;display:flex;align-items:center;gap:0.5rem}
+    .flash.success{background:rgba(16,185,129,0.08);color:#059669;border:1px solid rgba(16,185,129,0.2)}
+    .flash.error{background:rgba(239,68,68,0.08);color:#dc2626;border:1px solid rgba(239,68,68,0.2)}
+
+    .section{margin-bottom:1.75rem}
+    .section-title{font-size:0.9rem;font-weight:600;color:#334155;margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem}
+
+    table{width:100%;border-collapse:collapse}
+    th{background:#f8fafc;font-weight:600;color:#475569;font-size:0.74rem;text-transform:uppercase;letter-spacing:0.05em;padding:0.85rem 1.1rem;border-bottom:2px solid var(--border);white-space:nowrap}
+    td{padding:0.85rem 1.1rem;border-bottom:1px solid var(--border);font-size:0.875rem;vertical-align:middle}
+    tbody tr:hover{background:#f1f5f9}
+    tbody tr:last-child td{border-bottom:none}
+    .app-id{font-family:monospace;color:#4f46e5;font-size:0.85rem}
+    .agent-name{color:var(--text);font-weight:500}
+
+    .company-badge{display:inline-flex;align-items:center;padding:0.2rem 0.6rem;border-radius:100px;font-size:0.72rem;font-weight:600}
+    .company-tcil{background:rgba(99,102,241,0.1);color:#4f46e5;border:1px solid rgba(99,102,241,0.2)}
+    .company-sotc{background:rgba(16,185,129,0.1);color:#059669;border:1px solid rgba(16,185,129,0.2)}
+    .company-empty{background:rgba(148,163,184,0.08);color:var(--muted);border:1px solid var(--border)}
+
+    .add-form{padding:1.4rem 1.5rem}
+    .form-grid{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:0.75rem;align-items:end}
+    .form-full{grid-column:1/-1}
+    textarea.form-control{resize:vertical;min-height:60px}
+    .form-group label{display:block;font-size:0.73rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.4rem}
+    .form-control{width:100%;padding:0.7rem 0.9rem;background:#fff;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.875rem;font-family:inherit;transition:border-color 0.2s,box-shadow 0.2s}
+    .form-control:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,0.1)}
+    select.form-control option{background:#fff}
+
+    .empty{text-align:center;padding:3rem 1rem;color:var(--muted)}
+    .empty i{font-size:2.5rem;margin-bottom:0.75rem;opacity:0.3;display:block}
+
+    /* Modal */
+    .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);backdrop-filter:blur(4px);z-index:100;align-items:center;justify-content:center;padding:1rem}
+    .modal-overlay.open{display:flex}
+    .modal{background:#ffffff;border:1px solid var(--border);border-radius:20px;box-shadow:0 30px 80px rgba(0,0,0,.12);width:100%;max-width:540px;overflow:hidden;animation:mIn 0.25s ease}
+    @keyframes mIn{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
+    .modal-head{background:linear-gradient(135deg,#f8fafc,#f1f5f9);padding:1.1rem 1.5rem;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)}
+    .modal-head h3{font-size:0.95rem;font-weight:600;display:flex;align-items:center;gap:0.5rem}
+    .modal-body{padding:1.5rem}
+    .modal-footer{padding:1rem 1.5rem;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:0.75rem}
+    .modal-close{background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer;padding:0.2rem 0.5rem;border-radius:6px;transition:color 0.2s}
+    .modal-close:hover{color:var(--text)}
+
+    @media(max-width:640px){.form-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="logo">
+      <h1>🔗 Agent Mappings</h1>
+      <p>Map App IDs to LiveKit agent workers</p>
+    </div>
+    <div style="display:flex;gap:0.75rem">
+      <a href="/" class="btn btn-ghost"><i class="fas fa-arrow-left"></i> Dashboard</a>
+      <a href="/logout" class="btn btn-danger-soft"><i class="fas fa-sign-out-alt"></i> Logout</a>
+    </div>
+  </header>
+
+  {% if message %}
+  <div class="flash {{ 'success' if 'Error' not in message else 'error' }}">
+    {% if 'Error' not in message %}✅{% else %}⚠️{% endif %} {{ message }}
+  </div>
+  {% endif %}
+
+  <!-- Mappings Table -->
+  <div class="section">
+    <div class="section-title">
+      <i class="fas fa-list" style="color:var(--accent)"></i>
+      Current Mappings
+      <span style="background:rgba(99,102,241,0.1);color:#4f46e5;border:1px solid rgba(99,102,241,0.2);padding:0.15rem 0.55rem;border-radius:100px;font-size:0.72rem;font-weight:700;">{{ mappings|length }}</span>
+    </div>
+    <div class="card">
+      {% if mappings %}
+        <table>
+          <thead>
+            <tr>
+              <th>App ID</th>
+              <th>Agent Name</th>
+              <th>Company</th>
+              <th>Prompt</th>
+              <th>Opp Rule</th>
+              <th style="text-align:right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for app_id, entry in mappings.items() %}
+            {% set agent_name = entry.agent_name if entry is mapping else entry %}
+            {% set company = entry.company if entry is mapping else '' %}
+            {% set prompt = entry.prompt|default('', true) if entry is mapping else '' %}
+            {% set opp_tc = entry.opp_tool_calls|default('all', true) if entry is mapping else 'all' %}
+            {% set e_insr  = entry.inbound_sr|default(inbound_sr,  true) if entry is mapping else inbound_sr %}
+            {% set e_outsr = entry.outbound_sr|default(outbound_sr, true) if entry is mapping else outbound_sr %}
+            <tr>
+              <td class="app-id">{{ app_id }}</td>
+              <td class="agent-name">{{ agent_name }}</td>
+              <td>
+                {% if company %}
+                  <span class="company-badge {{ 'company-tcil' if company|lower == 'tcil' else ('company-sotc' if company|lower == 'sotc' else 'company-empty') }}">
+                    {{ company }}
+                  </span>
+                {% else %}
+                  <span class="company-badge company-empty">—</span>
+                {% endif %}
+              </td>
+              <td style="max-width:150px;font-size:.75rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{ prompt }}">{{ prompt[:60] if prompt else '—' }}</td>
+              <td style="font-size:.72rem">
+                {% if opp_tc == 'all' %}
+                  <span class="company-badge company-tcil">All calls</span>
+                {% else %}
+                  <span class="company-badge" style="background:rgba(234,179,8,.08);color:#a16207;border:1px solid rgba(234,179,8,.2)">{{ opp_tc|length }} tools</span>
+                {% endif %}
+              </td>
+              <td style="text-align:right">
+                <button type="button"
+                  class="btn btn-warning-soft btn-sm edit-btn"
+                 data-app-id="{{ app_id }}"
+                  data-agent="{{ agent_name }}"
+                  data-company="{{ company }}"
+                  data-prompt="{{ prompt|e }}"
+                  data-opp-tc='{{ opp_tc|tojson }}'
+                  data-inbound-sr="{{ e_insr }}"
+                  data-outbound-sr="{{ e_outsr }}">
+                  <i class="fas fa-pencil-alt"></i> Edit
+                </button>
+                <form method="POST" style="display:inline;margin-left:0.4rem">
+                  <input type="hidden" name="action" value="delete">
+                  <input type="hidden" name="app_id" value="{{ app_id }}">
+                  <button type="submit" class="btn btn-danger-soft btn-sm"
+                    onclick="return confirm('Remove mapping for {{ app_id }}?')">
+                    <i class="fas fa-trash"></i> Remove
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty"><i class="fas fa-map"></i><p>No mappings defined yet. Add one below.</p></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Add Mapping -->
+  <div class="section">
+    <div class="section-title"><i class="fas fa-plus-circle" style="color:var(--green)"></i> Add Mapping</div>
+    <div class="card add-form">
+      <form method="POST">
+        <input type="hidden" name="action" value="add">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>App ID</label>
+            <input type="text" name="app_id" class="form-control" placeholder="e.g. 00912263103314" required>
+          </div>
+          <div class="form-group">
+            <label>Agent Name</label>
+            <input type="text" name="agent_name" class="form-control" placeholder="e.g. sotc-travel-bot" required>
+          </div>
+          <div class="form-group">
+            <label>Company</label>
+            <select name="company" class="form-control">
+              <option value="">— Select —</option>
+              <option value="TCIL">TCIL</option>
+              <option value="SOTC">SOTC</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Inbound SR <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.7rem">Twilio→LK</span></label>
+            <select name="inbound_sr" class="form-control">
+              <option value="0">0 — Pass-through</option>
+              <option value="8000">8,000 Hz</option>
+              <option value="16000">16,000 Hz</option>
+              <option value="24000">24,000 Hz</option>
+              <option value="48000" selected>48,000 Hz</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Outbound SR <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.7rem">LK→Twilio</span></label>
+            <select name="outbound_sr" class="form-control">
+              <option value="0">0 — Pass-through</option>
+              <option value="8000" selected>8,000 Hz</option>
+              <option value="16000">16,000 Hz</option>
+              <option value="24000">24,000 Hz</option>
+              <option value="48000">48,000 Hz</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary" style="height:40px;white-space:nowrap;align-self:end">
+            <i class="fas fa-save"></i> Save
+          </button>
+        </div>
+        <div style="margin-top:1rem">
+          <div class="form-group form-full">
+            <label>Opening Prompt <span style="font-weight:400;text-transform:none;letter-spacing:0">(instruction sent at call start)</span></label>
+            <textarea name="prompt" class="form-control" rows="2" placeholder="e.g. Hello, thank you for being a valued customer of SOTC..."></textarea>
+          </div>
+        </div>
+        <div style="margin-top:.75rem">
+          <div class="form-group">
+            <label>Opportunity Logging</label>
+            <div style="display:flex;gap:1rem;margin-top:.3rem">
+              <label style="font-size:.82rem;color:var(--text);cursor:pointer;display:flex;align-items:center;gap:.3rem;text-transform:none;letter-spacing:0;font-weight:500">
+                <input type="radio" name="opp_mode" value="all" checked> All calls
+              </label>
+              <label style="font-size:.82rem;color:var(--text);cursor:pointer;display:flex;align-items:center;gap:.3rem;text-transform:none;letter-spacing:0;font-weight:500">
+                <input type="radio" name="opp_mode" value="specific"> Only if these tools are called:
+              </label>
+            </div>
+            <div id="add-tools" style="display:none;margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem .8rem">
+              {% for t in ['get_travel_package','get_fare_calendar','get_all_bogo_packages','search_packages_by_name','get_package_pricing','get_destination_info','get_destination_food','get_destination_weather','get_destination_sightseeing','get_destination_activities','get_destination_visa_info','create_opportunity'] %}
+              <label style="font-size:.78rem;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:.25rem;text-transform:none;letter-spacing:0;font-weight:400">
+                <input type="checkbox" name="opp_tools" value="{{ t }}"> {{ t }}
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     Bridge Audio Settings
+     ═══════════════════════════════════════════════════════ -->
+<div style="max-width:960px;margin:0 auto 2rem auto;padding:0 0">
+  <div class="section-title" style="margin-bottom:1rem">
+    <i class="fas fa-sliders-h" style="color:#f59e0b"></i>
+    Bridge Audio Settings
+    <span style="font-size:0.72rem;font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;margin-left:.5rem">(live — no restart needed)</span>
+  </div>
+  <div class="card" style="padding:1.4rem 1.5rem">
+    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:1rem;align-items:end">
+      <div class="form-group">
+        <label>Inbound Sample Rate <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.72rem">— Twilio → LiveKit</span></label>
+        <select id="bs-inbound" class="form-control">
+          <option value="0"     {% if inbound_sr == 0     %}selected{% endif %}>0 — No upsample (pass-through)</option>
+          <option value="8000"  {% if inbound_sr == 8000  %}selected{% endif %}>8,000 Hz</option>
+          <option value="16000" {% if inbound_sr == 16000 %}selected{% endif %}>16,000 Hz</option>
+          <option value="24000" {% if inbound_sr == 24000 %}selected{% endif %}>24,000 Hz</option>
+          <option value="48000" {% if inbound_sr == 48000 %}selected{% endif %}>48,000 Hz ← LiveKit default</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Outbound Sample Rate <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.72rem">— LiveKit → Twilio</span></label>
+        <select id="bs-outbound" class="form-control">
+          <option value="0"     {% if outbound_sr == 0     %}selected{% endif %}>0 — No downsample (pass-through 48k)</option>
+          <option value="8000"  {% if outbound_sr == 8000  %}selected{% endif %}>8,000 Hz ← Twilio default</option>
+          <option value="16000" {% if outbound_sr == 16000 %}selected{% endif %}>16,000 Hz</option>
+          <option value="24000" {% if outbound_sr == 24000 %}selected{% endif %}>24,000 Hz</option>
+          <option value="48000" {% if outbound_sr == 48000 %}selected{% endif %}>48,000 Hz</option>
+        </select>
+      </div>
+      <button id="bs-save" class="btn btn-primary" style="height:40px;white-space:nowrap;align-self:end">
+        <i class="fas fa-save"></i> Apply
+      </button>
+    </div>
+    <div id="bs-msg" style="margin-top:.75rem;font-size:.82rem;display:none"></div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3><i class="fas fa-pencil-alt" style="color:#a16207"></i> Edit Mapping</h3>
+      <button class="modal-close" onclick="closeEditModal()"><i class="fas fa-times"></i></button>
+    </div>
+    <form method="POST">
+      <input type="hidden" name="action" value="edit">
+      <input type="hidden" name="old_app_id" id="edit-old-app-id">
+      <div class="modal-body">
+        <div style="display:grid;gap:1rem">
+          <div class="form-group">
+            <label>App ID</label>
+            <input type="text" name="app_id" id="edit-app-id" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label>Agent Name</label>
+            <input type="text" name="agent_name" id="edit-agent-name" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label>Company</label>
+            <select name="company" id="edit-company" class="form-control">
+              <option value="">— Select —</option>
+              <option value="TCIL">TCIL</option>
+              <option value="SOTC">SOTC</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Opening Prompt</label>
+            <textarea name="prompt" id="edit-prompt" class="form-control" rows="3" placeholder="Opening instruction for the agent..."></textarea>
+          </div>
+          <div class="form-group">
+            <label>Opportunity Logging</label>
+            <div style="display:flex;gap:1rem;margin-top:.3rem">
+              <label style="font-size:.82rem;color:var(--text);cursor:pointer;display:flex;align-items:center;gap:.3rem;text-transform:none;letter-spacing:0;font-weight:500">
+                <input type="radio" name="opp_mode" value="all" id="edit-opp-all" checked> All calls
+              </label>
+              <label style="font-size:.82rem;color:var(--text);cursor:pointer;display:flex;align-items:center;gap:.3rem;text-transform:none;letter-spacing:0;font-weight:500">
+                <input type="radio" name="opp_mode" value="specific" id="edit-opp-specific"> Only specific tools:
+              </label>
+            </div>
+            <div id="edit-tools" style="margin-top:.5rem;flex-wrap:wrap;gap:.4rem .8rem;display:none">
+              {% for t in ['get_travel_package','get_fare_calendar','get_all_bogo_packages','search_packages_by_name','get_package_pricing','get_destination_info','get_destination_food','get_destination_weather','get_destination_sightseeing','get_destination_activities','get_destination_visa_info','create_opportunity'] %}
+              <label style="font-size:.78rem;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:.25rem;text-transform:none;letter-spacing:0;font-weight:400">
+                <input type="checkbox" name="opp_tools" value="{{ t }}" class="edit-tool-cb"> {{ t }}
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="form-group" style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+            <div>
+              <label>Inbound SR <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.7rem">Twilio→LiveKit</span></label>
+              <select name="inbound_sr" id="edit-inbound-sr" class="form-control">
+                <option value="0">0 — Pass-through</option>
+                <option value="8000">8,000 Hz</option>
+                <option value="16000">16,000 Hz</option>
+                <option value="24000">24,000 Hz</option>
+                <option value="48000">48,000 Hz</option>
+              </select>
+            </div>
+            <div>
+              <label>Outbound SR <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.7rem">LiveKit→Twilio</span></label>
+              <select name="outbound_sr" id="edit-outbound-sr" class="form-control">
+                <option value="0">0 — Pass-through</option>
+                <option value="8000">8,000 Hz</option>
+                <option value="16000">16,000 Hz</option>
+                <option value="24000">24,000 Hz</option>
+                <option value="48000">48,000 Hz</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeEditModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary"><i class="fas fa-check"></i> Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  // ── Bridge Settings ──────────────────────────────────────────────────
+  (function(){
+    const inSel  = document.getElementById('bs-inbound');
+    const outSel = document.getElementById('bs-outbound');
+    const saveBtn= document.getElementById('bs-save');
+    const msg    = document.getElementById('bs-msg');
+
+    function showMsg(text, ok){
+      msg.style.display='block';
+      msg.style.color = ok ? '#059669' : '#dc2626';
+      msg.textContent = text;
+      setTimeout(()=>{ msg.style.display='none'; }, 4000);
+    }
+
+    // Load current values
+    fetch('/api/bridge-settings')
+      .then(r=>r.json())
+      .then(d=>{
+        inSel.value  = String(d.inbound_sr);
+        outSel.value = String(d.outbound_sr);
+      })
+      .catch(()=>{});
+
+    // Save on click
+    saveBtn.addEventListener('click', function(){
+      saveBtn.disabled = true;
+      fetch('/api/bridge-settings', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({inbound_sr: parseInt(inSel.value), outbound_sr: parseInt(outSel.value)})
+      })
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.error){ showMsg('❌ ' + d.error, false); }
+        else { showMsg(`✅ Applied — Inbound: ${d.inbound_sr} Hz | Outbound: ${d.outbound_sr} Hz`, true); }
+      })
+      .catch(e=>showMsg('❌ Request failed: '+e, false))
+      .finally(()=>{ saveBtn.disabled=false; });
+    });
+  })();
+  // ─────────────────────────────────────────────────────────────────────
+
+  // Toggle tools visibility for Add form
+  document.querySelectorAll('input[name="opp_mode"]').forEach(r=>{
+    r.addEventListener('change',function(){
+      const form=this.closest('form');
+      const toolsDiv=form.querySelector('[id$="-tools"]')||document.getElementById('add-tools');
+      if(toolsDiv) toolsDiv.style.display=this.value==='specific'?'flex':'none';
+    });
+  });
+
+  // Edit button
+  document.querySelectorAll('.edit-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      document.getElementById('edit-old-app-id').value = this.dataset.appId;
+      document.getElementById('edit-app-id').value     = this.dataset.appId;
+      document.getElementById('edit-agent-name').value = this.dataset.agent;
+      document.getElementById('edit-company').value    = this.dataset.company || '';
+      document.getElementById('edit-prompt').value     = this.dataset.prompt || '';
+      document.getElementById('edit-inbound-sr').value  = this.dataset.inboundSr  || '48000';
+      document.getElementById('edit-outbound-sr').value = this.dataset.outboundSr || '8000';
+
+      // Opp tool calls
+      let oppTc = 'all';
+      try { oppTc = JSON.parse(this.dataset.oppTc); } catch(e) {}
+      const isAll = oppTc === 'all';
+      document.getElementById('edit-opp-all').checked = isAll;
+      document.getElementById('edit-opp-specific').checked = !isAll;
+      document.getElementById('edit-tools').style.display = isAll ? 'none' : 'flex';
+
+      // Check the right tool checkboxes
+      document.querySelectorAll('.edit-tool-cb').forEach(cb => {
+        cb.checked = !isAll && Array.isArray(oppTc) && oppTc.includes(cb.value);
+      });
+
+      document.getElementById('edit-modal').classList.add('open');
+    });
+  });
+
+  function closeEditModal() {
+    document.getElementById('edit-modal').classList.remove('open');
+  }
+
+  document.getElementById('edit-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeEditModal();
+  });
+</script>
+</body>
+</html>

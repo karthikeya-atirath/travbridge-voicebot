@@ -1,0 +1,50 @@
+# ── Exclude things that should never go into a Docker image ─────────────────
+
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.py[cod]
+*.pyo
+
+# Virtual environments (very large — use requirements.txt instead)
+livekit/livekit/
+livekit_sotc/livekit/
+venv/
+.venv/
+env/
+
+# Logs (mounted as volumes at runtime)
+livekit/chat_logs/
+livekit_sotc/chat_logs/
+**/*.log
+**/*.txt.log
+**/chat_logs/
+
+# Local env files (injected via docker-compose env_file)
+.env
+.env_dev
+livekit/.env
+livekit/.env_dev
+livekit_sotc/.env
+livekit_sotc/.env_dev
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Test files
+test_*.py
+*_test.py
+
+# Other service we're not building right now
+c-zen-bridge/
+
+# Build artifacts (docs/scripts, not needed inside image)
+README.md
+build_release.sh
+docker-compose.yml
+Dockerfile.*

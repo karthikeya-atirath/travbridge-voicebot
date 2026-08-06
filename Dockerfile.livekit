@@ -1,0 +1,28 @@
+# ── TCIL VoiceBot (livekit/) ──────────────────────────────────────────────────
+FROM python:3.12-slim
+
+# System packages needed by some livekit plugins
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps first (layer cached unless requirements change)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source so download-files can run
+COPY livekit/ .
+
+# Pre-download turn-detector model files (bakes them into the image layer)
+RUN python agent_stt_llm_tts_v1.py download-files
+
+RUN mkdir -p chat_logs/conversations
+RUN rm -rf __pycache__ *.pyc
+
+EXPOSE 8081
+
+CMD ["python", "agent_stt_llm_tts_v1.py", "start"]

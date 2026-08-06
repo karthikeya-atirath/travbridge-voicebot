@@ -1,0 +1,39 @@
+{
+  "169856311": {
+    "agent_name": "tc-travel-bot",
+    "company": "TCIL",
+    "opp_tool_calls": "all",
+    "inbound_sr": 0,
+    "outbound_sr": 0
+  },
+  "169856312": {
+    "agent_name": "sotc-travel-bot",
+    "company": "SOTC",
+    "opp_tool_calls": "all",
+    "inbound_sr": 0,
+    "outbound_sr": 0
+  },
+  "169856313": {
+    "agent_name": "sotc-travel-bot",
+    "company": "SOTC",
+    "opp_tool_calls": [
+      "get_travel_package",
+      "get_all_bogo_packages",
+      "search_packages_by_name"
+    ],
+    "inbound_sr": 0,
+    "outbound_sr": 0
+  },
+  "162056308": {
+    "agent_name": "sotc-travel-bot",
+    "company": "SOTC",
+    "prompt": "Note: This is an Outbound call don't use the Inbound opening prompt use only \u201cHello, thank you for being a valued customer of SOTC. I\u2019m calling to share some exciting holiday offers curated especially for you. Is this a convenient time to speak?\u201d  this is only into you will give. dont intoduce again.\r\n\r\nNext ask about destination.",
+    "opp_tool_calls": [
+      "get_travel_package",
+      "get_all_bogo_packages",
+      "search_packages_by_name"
+    ],
+    "inbound_sr": 0,
+    "outbound_sr": 0
+  }
+}

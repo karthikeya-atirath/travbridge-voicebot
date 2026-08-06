@@ -1,0 +1,58 @@
+
+> agent-starter-react@0.1.0 lint
+> next lint
+
+`next lint` is deprecated and will be removed in Next.js 16.
+For new projects, use create-next-app to choose your preferred linter.
+For existing projects, migrate to the ESLint CLI:
+npx @next/codemod@canary next-lint-to-eslint-cli .
+
+
+./app/layout.tsx
+50:39  Warning: 'companyName' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+50:52  Warning: 'logo' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+50:58  Warning: 'logoDark' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+
+./components/agents-ui/agent-audio-visualizer-aura.tsx
+35:12  Warning: 'error' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./components/agents-ui/agent-audio-visualizer-radial.tsx
+141:6  Warning: React Hook useMemo has an unnecessary dependency: '_barCount'. Either exclude it or remove the dependency array.  react-hooks/exhaustive-deps
+
+./components/agents-ui/agent-control-bar.tsx
+5:18  Warning: 'MessageSquareTextIcon' is defined but never used.  @typescript-eslint/no-unused-vars
+6:28  Warning: 'motion' is defined but never used.  @typescript-eslint/no-unused-vars
+12:3  Warning: 'agentTrackToggleVariants' is defined but never used.  @typescript-eslint/no-unused-vars
+15:10  Warning: 'Toggle' is defined but never used.  @typescript-eslint/no-unused-vars
+44:7  Warning: 'MOTION_PROPS' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+255:3  Warning: 'onIsChatOpenChange' is defined but never used.  @typescript-eslint/no-unused-vars
+261:10  Warning: 'isChatOpenUncontrolled' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+261:34  Warning: 'setIsChatOpenUncontrolled' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+
+./components/agents-ui/react-shader-toy.tsx
+146:7  Warning: 'NearestMipMapLinearFilter' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+147:7  Warning: 'LinearMipMapNearestFilter' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+148:7  Warning: 'NearestMipMapNearestFilter' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+149:7  Warning: 'MirroredRepeatWrapping' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+
+./components/ai-elements/message.tsx
+192:3  Warning: 'className' is defined but never used.  @typescript-eslint/no-unused-vars
+193:3  Warning: 'from' is defined but never used.  @typescript-eslint/no-unused-vars
+234:47  Warning: 'className' is defined but never used.  @typescript-eslint/no-unused-vars
+297:11  Warning: Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+./components/custom-cards/activities-card.tsx
+124:21  Warning: Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+./components/custom-cards/destination-food-card.tsx
+4:10  Warning: 'Drumstick' is defined but never used.  @typescript-eslint/no-unused-vars
+60:19  Warning: Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+./components/custom-cards/destination-info-card.tsx
+37:11  Warning: Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+102:19  Warning: Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+./components/custom-cards/sightseeing-card.tsx
+65:19  Warning: Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+info  - Need to disable some ESLint rules? Learn more here: https://nextjs.org/docs/app/api-reference/config/eslint#disabling-rules

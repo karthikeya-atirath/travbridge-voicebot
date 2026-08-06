@@ -1,0 +1,715 @@
+{
+  "id": "PKG014256",
+  "itinerary_data": {
+    "packageId": "PKG014256",
+    "availableMonths": [
+      "july_2026",
+      "april_2026",
+      "june_2026",
+      "august_2026",
+      "september_2026",
+      "may_2026"
+    ],
+    "packageName": "Fusion Europe - Summer 2026",
+    "days": 11,
+    "cities": [
+      {
+        "cityName": "Paris",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Paris, Northwest Europe, France"
+      },
+      {
+        "cityName": "Paris",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Paris, Northwest Europe, France"
+      },
+      {
+        "cityName": "Paris",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Paris, Northwest Europe, France"
+      },
+      {
+        "cityName": "Basel",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Basel, Basel-Stadt, Northwestern Switzerland, Switzerland"
+      },
+      {
+        "cityName": "Basel",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Basel, Basel-Stadt, Northwestern Switzerland, Switzerland"
+      },
+      {
+        "cityName": "Zurich",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Zurich, Zurich, Central Switzerland, Switzerland"
+      },
+      {
+        "cityName": "Seefeld",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Seefeld, Tyrol, Central Europe, Austria"
+      },
+      {
+        "cityName": "Padova",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Padova, Veneto, Northeast Italy, Italy"
+      },
+      {
+        "cityName": "Chianciano Terme",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Chianciano Terme, Tuscany, Central Italy, Italy"
+      },
+      {
+        "cityName": "Chianciano Terme",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Chianciano Terme, Tuscany, Central Italy, Italy"
+      },
+      {
+        "cityName": "Pisa",
+        "geoLocation": {
+          "lon": 0.0,
+          "lat": 0.0
+        },
+        "aliasCityName": "Pisa, Tuscany, Central Italy, Italy"
+      }
+    ],
+    "highlights": [""],
+    "pdfName": "PKG009867_0_undefined.pdf",
+    "price": 296582,
+    "packageSummary": "The 'Fusion Europe - Summer 2026' package is an 11\u2011day whirlwind that opens with a relaxing stay in the thermal haven of Chianciano Terme before whisking travelers to the romance of Paris for iconic sights such as the Eiffel Tower, Louvre Museum, and a sunset Seine river cruise, then on to Basel where guided tours of the Kunstmuseum, a Rhine boat ride and a taste of Swiss chocolate await; the itinerary continues to Zurich for a scenic Lake Zurich cruise, historic Old Town strolls and a day\u2011trip to nearby vineyards, followed by Alpine adventure in Seefeld with cable\u2011car rides, mountain hikes and a traditional Tyrolean dinner; the journey then heads south to Pisa for a photo\u2011op with the Leaning Tower and a leisurely walk through the Piazza dei Miracoli, and concludes in Padova with visits to the Scrovegni Chapel, the historic university and a gourmet dinner in a local osteria before returning to Chianciano Terme for a final soothing spa session.",
+    "images": [
+      "Paris7533.jpg",
+      "VersaillesPalace.jpg",
+      "Disneyland75345.jpg",
+      "Switzerland7537.jpg",
+      "JungfraujochSummer753.jpg",
+      "Titles753.jpg",
+      "SwarovskiMuseumInnsbruck753.jpg",
+      "PiazzaSanMarcDogePalaceVenice753.jpg",
+      "FlorenceandDuomo753.jpg",
+      "StPeterBasilica753.jpg",
+      "Pisa753.jpg"
+    ],
+    "minimumPrice": 296582,
+    "thumbnailImage": "Rome.jpg",
+    "packageTheme": ["Family"],
+    "packageData": "Package ID: PKG014256 is named 'Fusion Europe - Summer 2026' and spans 11 days. The itinerary includes:\nDay 1 - Paris, Meals: Dinner, Description: Welcome to Paris! On arrival, our Tour Manager / Local Representative will meet and welcome you outside the airport. Later, we proceed to the hotel and check\u2013in. Note: Joining direct passenger / NRI can check-in on your own at the hotel. The standard check-in time is 1500 hrs. We may have to proceed directly for dinner or packed dinner will be provided in case of late arrivals of flight or long queue at the immigration., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 2 - Paris, Meals: Breakfast, Lunch and Dinner, Description: Guided city tour of Paris \u2013 Visit Fragonard - Guided tour of Versailles Palace\u2013 River Seine Cruise Today, we proceed on a guided tour of Paris: See the Alexander Bridge, Arc de Triomphe, Concorde Square, Opera House and Les Invalides. Next, we visit the Famous French perfume museum \u2013 Fragonard. Later, we proceed for a Guided Tour of Versailles Palace with private apartments, Opera Hall, the Chapel & Hall of Mirrors. In the evening, we take a scenic cruise on river Seine., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 3 - Paris, Meals: Breakfast and Dinner, Description: Disneyland\u00ae Paris (01 Day 01 Park) - Eiffel Tower (2nd Level) \u2013 Illumination Tour Today, we proceed to Disneyland\u00ae Paris (Upto 5 hrs), where you can visit Disneyland\u00ae Park OR Disneyland\u00ae Studios. Get charmed by Sleeping Beauty Castle, enjoy exciting rollercoaster rides, meet Alice in Wonderland, Pinocchio and others in Fantasyland as well as travelling to the four corners of the globe in Adventureland. In the evening, we visit the Eiffel tower 2nd level and we enjoy \u2018Illumination Tour of Paris\u2019 and see Paris by night, with some of the city\u2019s famous monuments / sights light up. Note: Due to stringent security checks at the Eiffel Tower, it may take up to 4 \u2013 5 hours in the queue., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 4 - Basel, Meals: Breakfast and Dinner, Description: Onto Scenic Switzerland Today, we enjoy a scenic drive to Switzerland. On arrival, check-in to the hotel., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 5 - Basel, Meals: Breakfast and Dinner, Description: Day at leisure OR Chance to visit Jungfraujoch with lunch and Interlaken (Optional) Today, the day is at leisure OR you can join us for a visit to Jungfraujoch - The Top of Europe. We board the cable car followed by a cog-wheel train up to a height of 3,454 meters to Europe\u2019s highest railway station. Visit the Ice Palace and the Sphinx observatory deck to view the longest glacier in the Alps. Later, we visit Interlaken. Note: Guests who do not opt for this Optional excursion will get packed dinner delivered at the hotel when the group arrives., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 6 - Zurich, Meals: Breakfast, Lunch and Dinner, Description: Visit Mt. Titlis \u2013 Orientation tour of Lucerne Today, we drive to Lucerne for an orientation tour: See the Lion Monument and Kapellbrucke. Next, we enjoy some free time to explore the town and shop for Swiss watches, knives, chocolates and souvenirs. Later, we proceed to Mt. Titlis where you will take cable car rides including the world\u2019s first rotating cable car, the Rotair \u2013 to the top of Mt. Titlis at 3,020 meters. Do visit the \u201cCliff Walk\u201d - a suspension bridge along the cliff of Mt. Titlis.\u201d, GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 7 - Seefeld, Meals: Breakfast, Lunch and Local Dinner, Description: Orientation tour of Vaduz \u2013 Swarovski Crystal Worlds \u2013 Orientation tour of Innsbruck Today, we drive to Innsbruck. En route, visit Vaduz, the capital of Liechtenstein. Here, we enjoy an orientation tour of Vaduz. Here you get some free time to shop at the Huber watch store Next, we visit the Swarovski Crystal Worlds in Wattens. Later, proceed for an orientation tour of Innsbruck: See the Golden Roof and the Maria Theresien Strasse., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 8 - Padova, Meals: Breakfast and Dinner, Description: Orientation tour of Venice Today, we proceed to the pier and take a private boat to Venice. On arrival, we visit St. Mark\u2019s square to see the Basilica, Doge\u2019s Palace, Campanile and Bridge of Sighs. Later, spend time to explore the city on your own., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 9 - Chianciano Terme, Meals: Breakfast, Lunch and Dinner, Description: Guided walking tour of Florence Today, we proceed to Florence for a guided walking tour: see the Duomo, the Campanile, the Baptistery with its Gates of Paradise and Piazza Della Signoria., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 10 - Chianciano Terme, Meals: Breakfast, Lunch and Dinner, Description: Day trip to Rome: Guided tour of Rome and Vatican City Today we go on a day trip to Rome and Vatican City. On arrival, we proceed for a guided city tour of Vatican City: the smallest country in the world (shorts or sleeveless vests not allowed), where we visit the famous St. Peter\u2019s Basilica and St. Peter\u2019s Square. Next, we continue for a guided city tour of Rome: See Circus Maximus and photo-stop at Colosseum & Arc of Constantine., GeoLocation: (Lat: 0.0, Lon: 0.0).\nDay 11 - Pisa, Meals: Breakfast, Description: See Leaning Tower of Pisa \u2013 Fly back home with pleasant memories! Today, we proceed to Pisa to see the world-famous leaning tower of Pisa. Later, we drive to Milan airport for your flight back home. Kindly spare a few minutes to share your feedback with your Tour Manager. Your valued suggestions will be most appreciated. Arrive home with pleasant memories of your Europe tour, which we are sure you will treasure for a lifetime. Note: Due to flight connectivity, few groups may depart out of Rome instead of Milan. Kindly check with your sales staff for your exact flight details. In major European cities, there are parking restrictions for coaches, and it is not possible to stop at all the places during the city tour. Your Tour Manager will try his/her best to stop coach wherever possible for a photo stop. Flights Important note: Flights are subject to change, once the group materializes on a first come first basis, alternative flight options will be offered. Round-trip Flights included for EX-India passengers Airfare not included for joining direct passengers, GeoLocation: (Lat: 0.0, Lon: 0.0).\nThe price is 296582.0. Hotels envisaged include: Overnight stay at the Hotels, \n03 nights at Clarion CDG / City Residence or similar in Paris (CDG Area), France.\n02 nights at Ibis style Basel / HI Express Basel or similar in Basel, Switzerland.\n01 night at Ibis style / HI Express / Harry\u2019s Home or similar in Zurich, Switzerland.\n01 night at Olympia / Lizumerhof / Kirchdach or similar in Seefeld, Austria.\n01 night at Four Point / Unaway / SHG or similar in Padova/ Bologna, Italy.\n02 nights at Hotel Fortuna / Alexandre Palme / Planet or similar in Chianciano Terme/ Arezzo, Italy.\n. Meals include: Breakfast Included, \nDaily continental breakfast (Breakfast includes bread, butter, jam, cereals, fruit juice, milk and coffee).\u00a0\n05 Indian Jain / vegetarian / non vegetarian lunches.\n09 Indian Jain / vegetarian /non-vegetarian dinners.\n01 Local dinner.\n\nNote: Packed lunches, if applicable, will be Jain / vegetarian. In certain places, there is a possibility of providing cash out to the passengers instead of packed lunches.. Inclusions: Return economy class group airfare as per the itinerary. All local taxes and services as of 15th Oct, 2025. Cost of Visa and Medical Insurance for the duration of the tour. Sightseeing and accommodation as per the above-mentioned itinerary. All transfers and extensive excursions with entrance fees (as specified in the itinerary) by a deluxe air-conditioned coach. Services of a professional, friendly and multilingual Tour Manager or a local Representative. (Subject to minimum 15 customers) Visa Requirements Multiple entry Schengen visa. This cost includes documentation, processing and consulate fees.. Exclusions: If you wish to travel in advance i.e., before the published departure date as mentioned in the brochure or like to come back on a later date after the tour ends, there will be an additional charge that will be applicable (subject to availability of seats for the given dates & ticket validity) which will be advised to you by our sales staff / travel agent. Kindly note, the deviation will be actioned only 30 Days prior to departure date. Tipping is expected from anyone providing your service e.g., Coach Driver, Local Guides, Hotel & Restaurant staff etc. It is mandatory to tip a nominal amount of EUR 3 per person/per day. For the entire duration of this tour, which is 11 Days, the total Tips amount is EUR 33 per person to be paid to the Tour Manager on Day 01 of the tour. Cost of Basic Travel Quota equivalent to USD 250,000. Any increase in the airfare charged by the airline on your air ticket (presently calculated as on 15th Oct, 2025) Government Taxes as applicable are extra. The tour cost does not include POE charges and passport charges. No porterage included. Any expenses of a personal nature such as porterage, laundry expenses, wines, mineral water, food and drink not in the regular menu provided by us, minibar, telephone calls, etc. Meals other than that are mentioned in your itinerary. Cost of excursions, city sightseeing, entrance fees and local guides availed of by the passengers, other than that mentioned in your itinerary. Private airport transfers, Cost of Suggested / Optional Excursions.. Product Terms and Conditions: Note: Optional will be operated subject to minimum strength of 20 passengers. Important Notes : Airline And Airfare The Airfare Is Based On The Fare Structure Existing As On 15th Oct, 2025. Any Further Increase In The Airfare Due To An Increase In The Fuel Price, Change In Government Regulations, Taxes, Etc., Charged By The Airline Will Have To Be Borne By The Passengers. Passengers Missing Flights Note That The Entire Ticket Gets No Show And New Return Ticket Needs To Be Bought By The Passengers Themselves. For Prices And Departure Dates From Your Hub City Please Contact Our Local Sales Offices/Travel Agents. Passengers Joining This Tour Must Travel To / From The Hub City At Their Own Expense. Joining Direct Clients Main Sector Air Tickets To Reach The First Overnight City And Last Departure City Is Not Included In The Joining Direct Package Price. Arrival And Departure Transfers Are Not Included In The Package Price. The Tour Manager Shall Meet The Clients Directly At The Hotel. Hotels All Hotels Will Be Either Around The Airport Area Or On The Outskirts. The Hotel Room Size In Europe Would Be Up To 16 \u2013 18 Sq. Mts. Most Hotels In Europe Have Only Twin Beds. The Double Bed Will Be Queen Size And Not King Size. As A 3rd Person In A Triple Room, Most Hotels Use Rollaway Beds And Room Size May Be The Same As The Double Room. For Child With Bed: At Times Hotel Don\u2019t Have Enough Roll Away Beds, In That Case They Might Give A Double And A Separate Single Room. A Person 11.99 Years And Below Is Considered A Child And 12 Years And Above, An Adult. Hotel Rooms May Not Be Air Conditioned / Air Cooled Nor Will Fans Be Provided. Air Conditioning / Cooling In Hotels Are Set As Per European Weather Conditions. Functioning Of Air Cooling / Air Conditioning In Hotels Is Subject To Official Declaration Of Summer By The Local Authority. During Heat Wave In Europe Air Conditioning Of The Hotels And Coaches May Cease To Function As They Are Not Built For Such High Temperatures. Most Hotels In Europe Do Not Provide Tea Kettles In The Rooms. Due To International Events And Trade Fairs All Throughout Europe Such As The Air Show, Music Festivals, Ice Skating Championships Etc., You May Have To Stay In Hotels Further Away From The City. In Switzerland The Stay May Be Split In Two Hotels. Any Damage Caused To The Hotel Rooms / Coach During Your Stay Shall Be Payable By The Passengers. We Also Reserve The Right To Substitute A Hotel Of Similar Class If It Is Deemed Advisable Or Necessary. In Certain Cities Hotels Have Not Started The Buffet Breakfasts Yet And If The Same Does Not Change By The Time The Tours Begin, We Will Either Provide Breakfast Or The Groups Will Be Taken To An Indian / Local Restaurant For Breakfast. Coaches Most Of Your Journey In Europe Is By Coach And Hence You Are Requested To Keep The Coach Clean. Due To Hygienic Reasons, It Is Not Permitted To Use Toilets On The Coach. However, The Tour Manager Will Make Comfort Stops During Long Drives. Eating & Drinking Is Not Permitted On The Coach. One Check-In Bag And One Handbag Per Person Only, Due To Limited Boot Space On The Coach. In Major European Cities, There Are Parking Restrictions For Coaches, And It May Not Be Possible To Stop At All The Places During The City Tour. Tour Manager Will Try His/Her Best To Stop Coach Wherever Possible For A Photo Stop. Coaches Are Non-Wheelchair Compliant. There Are Steps To Board / Alight From The Coach. Due To Private Coaches Being Forbidden Inside Most Of The European Cities, As Per Eu Norms To Preserve Them And To Avoid Getting Them Polluted And Overcrowded, Most Of Your Sightseeing Will Be Done By Local Buses And On Foot. Meals Meals Are Pre\u2013Set And A\u2013La Carte Is Not Possible. On Certain Days, A Packed Lunch Will Be Provided. Sightseeing On Certain Departures, We May Sometimes Amend / Reverse The Itinerary. However, All The Services / Inclusions Will Remain The Same. Generally, You Will Have To Walk To Sightseeing Places, Amusement Parks And The Airports Sometimes For A Long Distance; However, The Same Will Be Timely Instructed By The Tour Manager. It Is Advisable To Carry A Good Pair Of Comfortable Sports Shoes. The Tour Manager And The Driver Will Do Their Best To Get You As Close To The Monuments As Possible. The Eiffel Tower On Certain Days Due To Strong Wind Conditions Or Being Overcrowded Or For Security Reasons May Be Closed. The Lifts At The Eiffel Tower Are Currently Closed Due To Safety. Hence The Visit To The Tower Is Only Allowed By Climbing The Staircase. In Case There Is No Change In The Same On Tour Customers Will Be Refunded The Amount For The Same If They Chose Not To Climb The Stairs. Due To Stringent Security Checks At The Eiffel Tower, It May Take Up To 4-5 Hours In The Queue. No Refund Will Be Provided In Case The Group Is Unable To Visit Eiffel Tower 3rd Level Due To Weather Conditions / Operational Closures. General On Some Occasions You May Have To Join Another Group In Case The Group Does Not Have Adequate Members. A Local Representative Or A Driver May Only Be There To Assist You During Your Initial Part Of The Tour. Arrival And Departure Flights Should Be Booked According To The Group Flight Timings. In Case There Is Any Sightseeing Involved On The First Or Last Day Of The Itinerary To Avoid Missing Any Of The Services. Please Check With Your Sales Officer For The Group Flight Timings. Security Alerts And Random Closures Might Affect The Itinerary. Please Take Extra Care Of Your Personal Belongings While On The Tour, Every Country You Travel To Is Prone To Thefts And Bag Snatching. Tcil Will Not Be Liable For Any Loss Of Belongings / Baggage. Disabled Clients Should Carry Their Own Wheelchair And Should Be Accompanied By A Qualified Companion Who Is Able To Provide Assistance To The Disabled Client. Tcil Shall Not Accept Any Liability Or Responsibility For Any Damages, Loss, Baggage Loss, Theft, Injury, Accident, Death, Breakdown Or Irregularity, Which May Occur In Carrying Out The Tour Arrangement, Weather Conditions, Strikes, War, Quarantine And Any Other Cause Whatsoever And All Such Loss Or Expense Must Be Borne By The Passengers. Insurance Policies Must Be Carried While On Tour. Normal Insurance Charges For The Duration Of The Tour Are Included In The Tour Price. However, Any Passenger Above The Age Of 60 Years And Those Who Wish To Extend Their Stay Will Be Required To Pay Additional Charges. The Management Reserves The Right To Claim Any Additional Expenses Incurred Due To Delays Or Changes In Schedules Of Train, Airplane, Bus, Ship Or Other Services. The Tour Manager And The Company Reserves The Right To Amend The Itinerary, Alter, Vary Or Withdraw Any Particular Departure, Excursion Advertised. For The Convenience Of Our Passengers, We Will Sometimes Amend The Itinerary. However, All The Services Will Remain The Same. There Are No Refunds For Any Services I.E., Meals, Sightseeing Etc. Not Utilized On Your Tour. All Optional Activities Will Have To Be Booked And Paid To The Tour Manager On Day 01 Of The Tour. Payments To Be Made By Cash In Euro Only. (Credit Or Debit Cards Not Accepted). Optional Tours Are Booked & Paid On 100% Non-Refundable & Non Cancellation Policy. Gst Will Be Applicable For All Optional Activities Pre-Paid In India. In Case You Decide To Change The Date Of Your Return Reservation Once Confirmed The Exact Amount Payable To The Airline Will Be Advised Once The Same Is Confirmed. The Images Used In This Brochure Are For Representation Purposes Only. Tours Operated Are Subject To Rbi / Goi Regulations. Part Of The Tour Cost Will Be Paid In Euro Out Of Your Btq At Prevailing Rate Of Exchange. Please Refer To The Booking Form For Detailed \u201cTerms And Conditions\u201d.. Highlights of the package: .",
+    "departureCities": [
+      {
+        "cityName": "Mumbai",
+        "cityCode": "BOM",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      },
+      {
+        "cityName": "Delhi",
+        "cityCode": "DEL",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      },
+      {
+        "cityName": "Bangalore",
+        "cityCode": "BLR",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      },
+      {
+        "cityName": "Chennai",
+        "cityCode": "MAA",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      },
+      {
+        "cityName": "Hyderabad",
+        "cityCode": "HYD",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      },
+      {
+        "cityName": "Ahmedabad",
+        "cityCode": "AMD",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      },
+      {
+        "cityName": "Kolkata",
+        "cityCode": "CCU",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      },
+      {
+        "cityName": "Kochi",
+        "cityCode": "COK",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      },
+      {
+        "cityName": "Joining Direct",
+        "cityCode": "JD",
+        "ltItineraryCode": "ZVE711",
+        "holidayLtPricingId": ""
+      }
+    ],
+    "packageItinerary": {
+      "summary": "The 'Fusion Europe - Summer 2026' package is an 11\u2011day whirlwind that opens with a relaxing stay in the thermal haven of Chianciano Terme before whisking travelers to the romance of Paris for iconic sights such as the Eiffel Tower, Louvre Museum, and a sunset Seine river cruise, then on to Basel where guided tours of the Kunstmuseum, a Rhine boat ride and a taste of Swiss chocolate await; the itinerary continues to Zurich for a scenic Lake Zurich cruise, historic Old Town strolls and a day\u2011trip to nearby vineyards, followed by Alpine adventure in Seefeld with cable\u2011car rides, mountain hikes and a traditional Tyrolean dinner; the journey then heads south to Pisa for a photo\u2011op with the Leaning Tower and a leisurely walk through the Piazza dei Miracoli, and concludes in Padova with visits to the Scrovegni Chapel, the historic university and a gourmet dinner in a local osteria before returning to Chianciano Terme for a final soothing spa session.",
+      "itinerary": [
+        {
+          "day": 1,
+          "description": "\u00a0\n\u00a0\nWelcome to Paris!\nOn arrival, our Tour Manager / Local Representative will meet and welcome you outside the airport. Later, we proceed to the hotel and check\u2013in.\n Note: Joining direct passenger / NRI can check-in on your own at the hotel. The standard check-in time is 1500 hrs. We may have to proceed directly for dinner or packed dinner will be provided in case of late arrivals of flight or long queue at the immigration.",
+          "mealDescription": "Dinner",
+          "overnightStay": "Hotel\u00a0Clarion CDG\u00a0 / City Residence or similar in Paris (CDG Area), France"
+        },
+        {
+          "day": 2,
+          "description": "\u00a0\n\u00a0\nGuided city tour of Paris \u2013 Visit Fragonard - Guided tour of Versailles Palace\u2013 River Seine Cruise\nToday, we proceed on a guided tour of Paris: See the Alexander Bridge, Arc de Triomphe, Concorde Square, Opera House and Les Invalides. Next, we visit the Famous French perfume museum \u2013 Fragonard. Later, we proceed for a Guided Tour of Versailles Palace with private apartments, Opera Hall, the Chapel & Hall of Mirrors. In the evening, we take a scenic cruise on river Seine.",
+          "mealDescription": "Breakfast, Lunch and Dinner",
+          "overnightStay": "Hotel\u00a0Clarion CDG\u00a0 / City Residence or similar in Paris\u00a0(CDG Area),\u00a0France"
+        },
+        {
+          "day": 3,
+          "description": "\u00a0\n\u00a0\nDisneyland\u00ae Paris (01 Day 01 Park) - Eiffel Tower (2nd Level) \u2013 Illumination Tour\nToday, we proceed to Disneyland\u00ae Paris (Upto 5 hrs), where you can visit Disneyland\u00ae Park OR Disneyland\u00ae Studios. Get charmed by Sleeping Beauty Castle, enjoy exciting rollercoaster rides, meet Alice in Wonderland, Pinocchio and others in Fantasyland as well as travelling to the four corners of the globe in Adventureland. In the evening, we visit the Eiffel tower 2nd level and we enjoy \u2018Illumination Tour of Paris\u2019 and see Paris by night, with some of the city\u2019s famous monuments / sights light up.\nNote:\u00a0Due to stringent security checks at the Eiffel Tower, it may take up to 4 \u2013 5 hours in the queue.",
+          "mealDescription": "Breakfast and Dinner",
+          "overnightStay": "Hotel\u00a0Clarion CDG\u00a0 / City Residence or similar in Paris\u00a0(CDG Area),\u00a0France"
+        },
+        {
+          "day": 4,
+          "description": "\u00a0\n\u00a0\nOnto Scenic Switzerland\n\u00a0\nToday, we enjoy a scenic drive to Switzerland. On arrival, check-in to the hotel.",
+          "mealDescription": "Breakfast and Dinner",
+          "overnightStay": "Hotel\u00a0Ibis style Basel / HI Express Basel or similar in Basel, Switzerland"
+        },
+        {
+          "day": 5,
+          "description": "\u00a0\n\u00a0\nDay at leisure OR Chance to visit Jungfraujoch with lunch and Interlaken (Optional)\nToday, the day is at leisure OR you can join us for a visit to Jungfraujoch - The Top of Europe. We board the cable car followed by a cog-wheel train up to a height of 3,454 meters to Europe\u2019s highest railway station. Visit the Ice Palace and the Sphinx observatory deck to view the longest glacier in the Alps. Later, we visit Interlaken.\u00a0\n\u00a0\nNote: Guests who do not opt for this Optional excursion will get packed dinner delivered at the hotel when the group arrives.",
+          "mealDescription": "Breakfast and Dinner",
+          "overnightStay": "Hotel\u00a0Ibis style Basel / HI Express Basel or similar in Basel,\u00a0Switzerland"
+        },
+        {
+          "day": 6,
+          "description": "\u00a0\n\u00a0\nVisit Mt. Titlis \u2013 Orientation tour of Lucerne\nToday, we drive to Lucerne for an orientation tour: See the Lion Monument and Kapellbrucke. Next, we enjoy some free time to explore the town and shop for Swiss watches, knives, chocolates and souvenirs. Later, we proceed to Mt. Titlis where you will take cable car rides including the world\u2019s first rotating cable car, the Rotair \u2013 to the top of Mt. Titlis at 3,020 meters. Do visit the \u201cCliff Walk\u201d - a suspension bridge along the cliff of Mt. Titlis.\u201d",
+          "mealDescription": "Breakfast, Lunch and Dinner",
+          "overnightStay": "Hotel\u00a0Ibis style / HI Express / Harry\u2019s Home or similar in Zurich, Switzerland"
+        },
+        {
+          "day": 7,
+          "description": "\u00a0\n\u00a0\nOrientation tour of Vaduz \u2013 Swarovski Crystal Worlds \u2013 Orientation tour of Innsbruck\nToday, we drive to Innsbruck. En route, visit Vaduz, the capital of Liechtenstein. Here, we enjoy an orientation tour of Vaduz. Here you get some free time to shop at the Huber watch store Next, we visit the Swarovski Crystal Worlds in Wattens. Later, proceed for an orientation tour of Innsbruck: See the Golden Roof and the Maria Theresien Strasse.",
+          "mealDescription": "Breakfast, Lunch and Local Dinner",
+          "overnightStay": "Hotel\u00a0Olympia / Lizumerhof / Kirchdach or similar in Seefeld, Austria"
+        },
+        {
+          "day": 8,
+          "description": "\u00a0\n\u00a0\nOrientation tour of Venice\n\u00a0\nToday, we proceed to the pier and take a private boat to Venice. On arrival, we visit St. Mark\u2019s square to see the Basilica, Doge\u2019s Palace, Campanile and Bridge of Sighs. Later, spend time to explore the city on your own.\u00a0",
+          "mealDescription": "Breakfast and Dinner",
+          "overnightStay": "Hotel\u00a0Four Point / Unaway / SHG or similar in Padova/ Bologna, Italy"
+        },
+        {
+          "day": 9,
+          "description": "\u00a0\n\u00a0\nGuided walking tour of Florence\n\u00a0\nToday, we proceed to Florence for a guided walking tour: see the Duomo, the Campanile, the Baptistery with its Gates of Paradise and Piazza Della Signoria.",
+          "mealDescription": "Breakfast, Lunch and Dinner",
+          "overnightStay": "Hotel Fortuna / Alexandre Palme / Planet or similar in Chianciano Terme/ Arezzo, Italy"
+        },
+        {
+          "day": 10,
+          "description": "\u00a0\n\u00a0\nDay trip to Rome: Guided tour of Rome and Vatican City\nToday we go on a day trip to Rome and Vatican City. On arrival, we proceed for a guided city tour of Vatican City: the smallest country in the world (shorts or sleeveless vests not allowed), where we visit the famous St. Peter\u2019s Basilica and St. Peter\u2019s Square. Next, we continue for a guided city tour of Rome: See Circus Maximus and photo-stop at Colosseum & Arc of Constantine.",
+          "mealDescription": "Breakfast, Lunch and Dinner",
+          "overnightStay": "Hotel Fortuna\u00a0/ Alexandre Palme / Planet\u00a0or similar in\u00a0Chianciano Terme/ Arezzo,\u00a0Italy"
+        },
+        {
+          "day": 11,
+          "description": "\u00a0\n\u00a0\nSee Leaning Tower of Pisa \u2013 Fly back home with pleasant memories!\n\u00a0\nToday, we proceed to Pisa to see the world-famous leaning tower of Pisa. Later, we drive to Milan airport for your flight back home. Kindly spare a few minutes to share your feedback with your Tour Manager. Your valued suggestions will be most appreciated. Arrive home with pleasant memories of your Europe tour, which we are sure you will treasure for a lifetime.\n\u00a0\nNote:\n\nDue to flight connectivity, few groups may depart out of Rome instead of Milan. Kindly check with your sales staff for your exact flight details.\nIn major European cities, there are parking restrictions for coaches, and it is not possible to stop at all the places during the city tour. Your Tour Manager will try his/her best to stop coach wherever possible for a photo stop.\n\n\u00a0\nFlights Important note: \n\nFlights are subject to change, once the group materializes on a first come first basis, alternative flight options will be offered.\nRound-trip Flights included for EX-India passengers\nAirfare not included for joining direct passengers\n",
+          "mealDescription": "Breakfast",
+          "overnightStay": "N/A"
+        }
+      ]
+    },
+    "hotels": [
+      "Overnight stay at the Hotels",
+      "\n03 nights at Clarion CDG / City Residence or similar in Paris (CDG Area), France.\n02 nights at Ibis style Basel / HI Express Basel or similar in Basel, Switzerland.\n01 night at Ibis style / HI Express / Harry\u2019s Home or similar in Zurich, Switzerland.\n01 night at Olympia / Lizumerhof / Kirchdach or similar in Seefeld, Austria.\n01 night at Four Point / Unaway / SHG or similar in Padova/ Bologna, Italy.\n02 nights at Hotel Fortuna / Alexandre Palme / Planet or similar in Chianciano Terme/ Arezzo, Italy.\n"
+    ],
+    "hotels_list": {
+      "0": "Overnight stay at the Hotels",
+      "2": "Overnight stay at the Hotels",
+      "1": "\n03 nights at Clarion CDG / City Residence or similar in Paris (CDG Area), France.\n02 nights at Ibis style Basel / HI Express Basel or similar in Basel, Switzerland.\n01 night at Ibis style / HI Express / Harry\u2019s Home or similar in Zurich, Switzerland.\n01 night at Olympia / Lizumerhof / Kirchdach or similar in Seefeld, Austria.\n01 night at Four Point / Unaway / SHG or similar in Padova/ Bologna, Italy.\n02 nights at Hotel Fortuna / Alexandre Palme / Planet or similar in Chianciano Terme/ Arezzo, Italy.\n"
+    },
+    "continents": [
+      {
+        "continentId": 5,
+        "continentName": "Europe",
+        "countryCode": "CH",
+        "countryName": "Switzerland"
+      },
+      {
+        "continentId": 5,
+        "continentName": "Europe",
+        "countryCode": "IT",
+        "countryName": "Italy"
+      },
+      {
+        "continentId": 5,
+        "continentName": "Europe",
+        "countryCode": "AT",
+        "countryName": "Austria"
+      },
+      {
+        "continentId": 5,
+        "continentName": "Europe",
+        "countryCode": "FR",
+        "countryName": "France"
+      },
+      {
+        "continentId": 5,
+        "continentName": "Europe",
+        "countryCode": "VA",
+        "countryName": "Vatican City"
+      },
+      {
+        "continentId": 5,
+        "continentName": "Europe",
+        "countryCode": "LCH",
+        "countryName": "Liechtenstein"
+      }
+    ],
+    "packageTourType": ["Value"],
+    "meals": [
+      "Breakfast Included",
+      "\nDaily continental breakfast (Breakfast includes bread, butter, jam, cereals, fruit juice, milk and coffee).\u00a0\n05 Indian Jain / vegetarian / non vegetarian lunches.\n09 Indian Jain / vegetarian /non-vegetarian dinners.\n01 Local dinner.\n\nNote: Packed lunches, if applicable, will be Jain / vegetarian. In certain places, there is a possibility of providing cash out to the passengers instead of packed lunches."
+    ],
+    "visa": [
+      "As per itinerary",
+      "\nMultiple entry Schengen visa.\u00a0\nThis cost includes documentation, processing and consulate fees\n"
+    ],
+    "transfer": [],
+    "sightseeing": [
+      "As per itinerary",
+      "France\n\nGuided City Tour Of Paris\nGuided Tour Of Versailles Palace\nVisit 2nd Level Of Eiffel Tower\u00a0\nVisit Fragonard \u2013 French Perfume Museum\nEnjoy Illumination Tour Of Paris\nSeine River Cruise\nVisit Disneyland\u00ae Paris (01 Day 01 Park)\n\nSwitzerland\n\nVisit Mt. Titlis\u00a0\nOrientation Tour Of Lucerne\n\n\u00a0\nLiechtenstein\u00a0\n\nOrientation Tour Of Vaduz\n\n\u00a0\nAustria\n\nOrientation Tour Of Innsbruck\nVisit The Swarovski Crystal Worlds\n\nItaly\nVenice\n\nVisit St. Mark\u2019s Square On A Private Boat\nOrientation Tour Of Venice\n\n\u00a0\nFlorence \n\nGuided Walking Tour Of Florence\n\nRome\n\nGuided City Tour Of Rome\n\nVatican City\n\nVisit St. Peter\u2019s Basilica And Square\n\nPisa\n\nVisit Field Of Miracles \u2013 See The Leaning Tower Of Pisa\n"
+    ],
+    "tourManagerDescription": "<p>Rest assured, Thomas Cook's experienced &amp; knowledgeable tour manager will be with the group at every step of the journey. Be it transportation, accommodation &amp; everything in between, ensuring a seamless &amp; stress-free travel experience from start to finish. Whether it's a question or a challenge, our tour manager is always readily available to offer support, assistance &amp; ensure that your trip becomes a most cherished memory. (Presence of the Tour Manager is subject to a minimum of 15 - 20 customers, depending on package/destination booked)</p>",
+    "flightDescription": "<ul>\n<li>Return economy class group airfare as per the itinerary</li>\n</ul>",
+    "inclusions": "\nReturn economy class group airfare as per the itinerary.\u00a0\u00a0\nAll local taxes and services as of 15th Oct, 2025.\nCost of Visa and Medical Insurance for the duration of the tour.\u00a0\u00a0\nSightseeing and accommodation as per the above-mentioned itinerary.\nAll transfers and extensive excursions with entrance fees (as specified in the itinerary) by a deluxe air-conditioned coach.\nServices of a professional, friendly and multilingual Tour Manager or a local Representative. (Subject to minimum 15 customers)\n\n\u00a0\nVisa Requirements\n\nMultiple entry Schengen visa.\u00a0\nThis cost includes documentation, processing and consulate fees.\n",
+    "exclusions": "\nIf you wish to travel in advance i.e., before the published departure date as mentioned in the brochure or like to come back on a later date after the tour ends, there will be an additional charge that will be applicable (subject to availability of seats for the given dates & ticket validity) which will be advised to you by our sales staff / travel agent. Kindly note, the deviation will be actioned only 30 Days prior to departure date.\u00a0\u00a0\nTipping is expected from anyone providing your service e.g., Coach Driver, Local Guides, Hotel & Restaurant staff etc. It is mandatory to tip a nominal amount of EUR 3 per person/per day. For the entire duration of this tour, which is 11 Days, the total Tips amount is EUR 33 per person to be paid to the Tour Manager on Day 01 of the tour.\nCost of Basic Travel Quota equivalent to USD 250,000.\nAny increase in the airfare charged by the airline on your air ticket (presently calculated as on 15th Oct, 2025)\nGovernment Taxes as applicable are extra.\nThe tour cost does not include POE charges and passport charges.\nNo porterage included.\nAny expenses of a personal nature such as porterage, laundry expenses, wines, mineral water, food and drink not in the regular menu provided by us, minibar, telephone calls, etc.\nMeals other than that are mentioned in your itinerary.\nCost of excursions, city sightseeing, entrance fees and local guides availed of by the passengers, other than that mentioned in your itinerary.\nPrivate airport transfers, Cost of Suggested / Optional Excursions.\n",
+    "termsAndConditions": "\u00a0\n\nNote: Optional will be operated subject to minimum strength of 20 passengers.\n\n\u00a0\nImportant Notes :\n\u00a0\nAirline And Airfare\n\nThe Airfare Is Based On The Fare Structure Existing As On 15th Oct, 2025.\nAny Further Increase In The Airfare Due To An Increase In The Fuel Price, Change In Government Regulations, Taxes, Etc., Charged By The Airline Will Have To Be Borne By The Passengers.\nPassengers Missing Flights Note That The Entire Ticket Gets No Show And New Return Ticket Needs To Be Bought By The Passengers Themselves.\u00a0\nFor Prices And Departure Dates From Your Hub City Please Contact Our Local Sales Offices/Travel Agents.\u00a0\nPassengers Joining This Tour Must Travel To / From The Hub City At Their Own Expense.\n\n\u00a0\nJoining Direct Clients\n\nMain Sector Air Tickets To Reach The First Overnight City And Last Departure City Is Not Included In The Joining Direct Package Price.\nArrival And Departure Transfers Are Not Included In The Package Price.\u00a0\nThe Tour Manager Shall Meet The Clients Directly At The Hotel.\n\n\u00a0\nHotels\u00a0\n\nAll Hotels Will Be Either Around The Airport Area Or On The Outskirts.\u00a0\nThe Hotel Room Size In Europe Would Be Up To 16 \u2013 18 Sq. Mts.\nMost Hotels In Europe Have Only Twin Beds. The Double Bed Will Be Queen Size And Not King Size.\u00a0\nAs A 3rd Person In A Triple Room, Most Hotels Use Rollaway Beds And Room Size May Be The Same As The Double Room.\u00a0\nFor Child With Bed: At Times Hotel Don\u2019t Have Enough Roll Away Beds, In That Case They Might Give A Double And A Separate Single Room.\u00a0\nA Person 11.99 Years And Below Is Considered A Child And 12 Years And Above, An Adult.\u00a0\u00a0\nHotel Rooms May Not Be Air Conditioned / Air Cooled Nor Will Fans Be Provided. Air Conditioning / Cooling In Hotels Are Set As Per European Weather Conditions.\u00a0\nFunctioning Of Air Cooling / Air Conditioning In Hotels Is Subject To Official Declaration Of Summer By The Local Authority.\u00a0\nDuring Heat Wave In Europe Air Conditioning Of The Hotels And Coaches May Cease To Function As They Are Not Built For Such High Temperatures.\u00a0\nMost Hotels In Europe Do Not Provide Tea Kettles In The Rooms.\u00a0\nDue To International Events And Trade Fairs All Throughout Europe Such As The Air Show, Music Festivals, Ice Skating Championships Etc., You May Have To Stay In Hotels Further Away From The City.\u00a0\nIn Switzerland The Stay May Be Split In Two Hotels.\nAny Damage Caused To The Hotel Rooms / Coach During Your Stay Shall Be Payable By The Passengers.\u00a0\nWe Also Reserve The Right To Substitute A Hotel Of Similar Class If It Is Deemed Advisable Or Necessary.\u00a0\nIn Certain Cities Hotels Have Not Started The Buffet Breakfasts Yet And If The Same Does Not Change By The Time The Tours Begin, We Will Either Provide Breakfast Or The Groups Will Be Taken To An Indian / Local Restaurant For Breakfast.\u00a0\n\n\u00a0\nCoaches\u00a0\n\nMost Of Your Journey In Europe Is By Coach And Hence You Are Requested To Keep The Coach Clean.\u00a0\nDue To Hygienic Reasons, It Is Not Permitted To Use Toilets On The Coach. However, The Tour Manager Will Make Comfort Stops During Long Drives.\u00a0\nEating & Drinking Is Not Permitted On The Coach.\u00a0\nOne Check-In Bag And One Handbag Per Person Only, Due To Limited Boot Space On The Coach.\u00a0\nIn Major European Cities, There Are Parking Restrictions For Coaches, And It May Not Be Possible To Stop At All The Places During The City Tour. Tour Manager Will Try His/Her Best To Stop Coach Wherever Possible For A Photo Stop.\nCoaches Are Non-Wheelchair Compliant. There Are Steps To Board / Alight From The Coach.\u00a0\nDue To Private Coaches Being Forbidden Inside Most Of The European Cities, As Per Eu Norms To Preserve Them And To Avoid Getting Them Polluted And Overcrowded, Most Of Your Sightseeing Will Be Done By Local Buses And On Foot.\u00a0\n\n\u00a0\nMeals\u00a0\n\nMeals Are Pre\u2013Set And A\u2013La Carte Is Not Possible.\u00a0\nOn Certain Days, A Packed Lunch Will Be Provided.\u00a0\n\n\u00a0\nSightseeing\u00a0\n\nOn Certain Departures, We May Sometimes Amend / Reverse The Itinerary. However, All The Services / Inclusions Will Remain The Same.\u00a0\nGenerally, You Will Have To Walk To Sightseeing Places, Amusement Parks And The Airports Sometimes For A Long Distance; However, The Same Will Be Timely Instructed By The Tour Manager. It Is Advisable To Carry A Good Pair Of Comfortable Sports Shoes. The Tour Manager And The Driver Will Do Their Best To Get You As Close To The Monuments As Possible.\u00a0\nThe Eiffel Tower On Certain Days Due To Strong Wind Conditions Or Being Overcrowded Or For Security Reasons May Be Closed.\u00a0\nThe Lifts At The Eiffel Tower Are Currently Closed Due To Safety. Hence The Visit To The Tower Is Only Allowed By Climbing The Staircase. In Case There Is No Change In The Same On Tour Customers Will Be Refunded The Amount For The Same If They Chose Not To Climb The Stairs.\u00a0\nDue To Stringent Security Checks At The Eiffel Tower, It May Take Up To 4-5 Hours In The Queue.\nNo Refund Will Be Provided In Case The Group Is Unable To Visit Eiffel Tower 3rd Level Due To Weather Conditions / Operational Closures.\n\n\u00a0\nGeneral\u00a0\n\nOn Some Occasions You May Have To Join Another Group In Case The Group Does Not Have Adequate Members.\u00a0\nA Local Representative Or A Driver May Only Be There To Assist You During Your Initial Part Of The Tour.\u00a0\nArrival And Departure Flights Should Be Booked According To The Group Flight Timings. In Case There Is Any Sightseeing Involved On The First Or Last Day Of The Itinerary To Avoid Missing Any Of The Services. Please Check With Your Sales Officer For The Group Flight Timings.\nSecurity Alerts And Random Closures Might Affect The Itinerary.\u00a0\nPlease Take Extra Care Of Your Personal Belongings While On The Tour, Every Country You Travel To Is Prone To Thefts And Bag Snatching. Tcil Will Not Be Liable For Any Loss Of Belongings / Baggage.\u00a0\nDisabled Clients Should Carry Their Own Wheelchair And Should Be Accompanied By A Qualified Companion Who Is Able To Provide Assistance To The Disabled Client.\u00a0\nTcil Shall Not Accept Any Liability Or Responsibility For Any Damages, Loss, Baggage Loss, Theft, Injury, Accident, Death, Breakdown Or Irregularity, Which May Occur In Carrying Out The Tour Arrangement, Weather Conditions, Strikes, War, Quarantine And Any Other Cause Whatsoever And All Such Loss Or Expense Must Be Borne By The Passengers. Insurance Policies Must Be Carried While On Tour.\u00a0\nNormal Insurance Charges For The Duration Of The Tour Are Included In The Tour Price. However, Any Passenger Above The Age Of 60 Years And Those Who Wish To Extend Their Stay Will Be Required To Pay Additional Charges.\u00a0\nThe Management Reserves The Right To Claim Any Additional Expenses Incurred Due To Delays Or Changes In Schedules Of Train, Airplane, Bus, Ship Or Other Services.\u00a0\nThe Tour Manager And The Company Reserves The Right To Amend The Itinerary, Alter, Vary Or Withdraw Any Particular Departure, Excursion Advertised. For The Convenience Of Our Passengers, We Will Sometimes Amend The Itinerary. However, All The Services Will Remain The Same.\u00a0\nThere Are No Refunds For Any Services I.E., Meals, Sightseeing Etc. Not Utilized On Your Tour.\u00a0\nAll Optional Activities Will Have To Be Booked And Paid To The Tour Manager On Day 01 Of The Tour. Payments To Be Made By Cash In Euro Only. (Credit Or Debit Cards Not Accepted).\nOptional Tours Are Booked & Paid On 100% Non-Refundable & Non Cancellation Policy.\nGst Will Be Applicable For All Optional Activities Pre-Paid In India.\u00a0 \u00a0\nIn Case You Decide To Change The Date Of Your Return Reservation Once Confirmed The Exact Amount Payable To The Airline Will Be Advised Once The Same Is Confirmed.\u00a0\nThe Images Used In This Brochure Are For Representation Purposes Only.\u00a0\nTours Operated Are Subject To Rbi / Goi Regulations. Part Of The Tour Cost Will Be Paid In Euro Out Of Your Btq At Prevailing Rate Of Exchange.\u00a0\nPlease Refer To The Booking Form For Detailed \u201cTerms And Conditions\u201d.\u00a0\n",
+    "pkgSubtypeId": 3,
+    "pkgSubtypeName": "GIT",
+    "pkgTypeId": 1,
+    "isFlightIncluded": "Y",
+    "holidayPlusSubType": -1,
+    "productId": 4,
+    "flightsAvailability": "This package includes flights in the package price.",
+    "serviceSlots": null,
+    "constructed_thumbnailImage": "https://resources.thomascook.in/images/holidays/PKG014256/Rome.jpg",
+    "constructed_images": [
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/Paris7533.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/VersaillesPalace.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/Disneyland75345.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/Switzerland7537.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/JungfraujochSummer753.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/Titles753.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/SwarovskiMuseumInnsbruck753.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/PiazzaSanMarcDogePalaceVenice753.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/FlorenceandDuomo753.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/StPeterBasilica753.jpg",
+      "https://resources.thomascook.in/images/holidays/PKG014256/itinerary/Pisa753.jpg"
+    ]
+  },
+  "score": 7.079465,
+  "departureCity_details": {
+    "cityName": "Delhi",
+    "cityCode": "DEL",
+    "ltItineraryCode": "ZVE711"
+  },
+  "fareCalendar": {
+    "departureCities": [
+      {
+        "cityName": "Delhi",
+        "cityCode": "DEL",
+        "ltItineraryCode": "ZVE711",
+        "availability": {
+          "isAvailable": true,
+          "dateRange": {
+            "startDate": "02-04-2026",
+            "endDate": "25-09-2026"
+          },
+          "stats": {
+            "totalBookableDates": 41,
+            "totalOnRequestDates": 0,
+            "minPrice": 300415,
+            "maxPrice": 318415
+          }
+        },
+        "dates": {
+          "bookable": [
+            {
+              "date": "02-04-2026",
+              "price": 313415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 2,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711020426"
+            },
+            {
+              "date": "09-04-2026",
+              "price": 313415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 2,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711090426"
+            },
+            {
+              "date": "10-04-2026",
+              "price": 318415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 15,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711100426"
+            },
+            {
+              "date": "13-04-2026",
+              "price": 308415,
+              "strikeOutPrice": 337415,
+              "availableInventory": 10,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711130426"
+            },
+            {
+              "date": "17-04-2026",
+              "price": 308415,
+              "strikeOutPrice": 337415,
+              "availableInventory": 26,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711170426"
+            },
+            {
+              "date": "23-04-2026",
+              "price": 313415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 5,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711230426"
+            },
+            {
+              "date": "04-05-2026",
+              "price": 313415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 17,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711040526"
+            },
+            {
+              "date": "07-05-2026",
+              "price": 318415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 26,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711070526"
+            },
+            {
+              "date": "08-05-2026",
+              "price": 318415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 13,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711080526"
+            },
+            {
+              "date": "12-05-2026",
+              "price": 313415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 26,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711120526"
+            },
+            {
+              "date": "14-05-2026",
+              "price": 318415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 11,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711140526"
+            },
+            {
+              "date": "18-05-2026",
+              "price": 313415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 26,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711180526"
+            },
+            {
+              "date": "21-05-2026",
+              "price": 318415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 17,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711210526"
+            },
+            {
+              "date": "22-05-2026",
+              "price": 318415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 22,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711220526"
+            },
+            {
+              "date": "25-05-2026",
+              "price": 318415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 29,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711250526"
+            },
+            {
+              "date": "28-05-2026",
+              "price": 318415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 18,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711280526"
+            },
+            {
+              "date": "29-05-2026",
+              "price": 313415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 37,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711290526"
+            },
+            {
+              "date": "01-06-2026",
+              "price": 315415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 23,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711010626"
+            },
+            {
+              "date": "05-06-2026",
+              "price": 315415,
+              "strikeOutPrice": 347415,
+              "availableInventory": 30,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711050626"
+            },
+            {
+              "date": "08-06-2026",
+              "price": 305415,
+              "strikeOutPrice": 337415,
+              "availableInventory": 45,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711080626"
+            },
+            {
+              "date": "11-06-2026",
+              "price": 310415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 33,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711110626"
+            },
+            {
+              "date": "12-06-2026",
+              "price": 310415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 35,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711120626"
+            },
+            {
+              "date": "18-06-2026",
+              "price": 310415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 31,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711180626"
+            },
+            {
+              "date": "19-06-2026",
+              "price": 305415,
+              "strikeOutPrice": 337415,
+              "availableInventory": 42,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711190626"
+            },
+            {
+              "date": "22-06-2026",
+              "price": 310415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 39,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711220626"
+            },
+            {
+              "date": "25-06-2026",
+              "price": 305415,
+              "strikeOutPrice": 337415,
+              "availableInventory": 45,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711250626"
+            },
+            {
+              "date": "26-06-2026",
+              "price": 310415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 39,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711260626"
+            },
+            {
+              "date": "29-06-2026",
+              "price": 305415,
+              "strikeOutPrice": 337415,
+              "availableInventory": 45,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711290626"
+            },
+            {
+              "date": "03-07-2026",
+              "price": 310415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 40,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711030726"
+            },
+            {
+              "date": "10-07-2026",
+              "price": 310415,
+              "strikeOutPrice": 342415,
+              "availableInventory": 39,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711100726"
+            },
+            {
+              "date": "17-07-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 42,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711170726"
+            },
+            {
+              "date": "24-07-2026",
+              "price": 305415,
+              "strikeOutPrice": 337415,
+              "availableInventory": 45,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711240726"
+            },
+            {
+              "date": "31-07-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 45,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711310726"
+            },
+            {
+              "date": "07-08-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 43,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711070826"
+            },
+            {
+              "date": "11-08-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 45,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711110826"
+            },
+            {
+              "date": "21-08-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 40,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711210826"
+            },
+            {
+              "date": "25-08-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 45,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711250826"
+            },
+            {
+              "date": "04-09-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 43,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711040926"
+            },
+            {
+              "date": "15-09-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 45,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711150926"
+            },
+            {
+              "date": "18-09-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 41,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711180926"
+            },
+            {
+              "date": "25-09-2026",
+              "price": 300415,
+              "strikeOutPrice": 332415,
+              "availableInventory": 31,
+              "lastSellDay": 10,
+              "ltProdCode": "ZVE711250926"
+            }
+          ],
+          "onRequest": []
+        }
+      }
+    ],
+    "summary": {
+      "totalCities": 1,
+      "availableCities": 1,
+      "overallDateRange": {
+        "startDate": "02-04-2026",
+        "endDate": "25-09-2026"
+      },
+      "priceRange": {
+        "min": 300415,
+        "max": 318415
+      }
+    }
+  }
+}
