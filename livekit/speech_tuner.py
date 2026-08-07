@@ -2,9 +2,9 @@
 
 This project's voice agent keeps Deepgram as its STT provider, so the STT
 knobs below are Deepgram's actual `update_options()` params (endpointing_ms,
-no_delay, utterance_end_ms) rather than Sarvam's VAD-frame params — same
-intent (how aggressively to decide the customer stopped talking), mapped to
-the provider actually in use. TTS knobs are Sarvam's, unchanged.
+no_delay) rather than Sarvam's VAD-frame params — same intent (how
+aggressively to decide the customer stopped talking), mapped to the
+provider actually in use. TTS knobs are Sarvam's, unchanged.
 
 NOTE: calling STT.update_options() forces Deepgram to reconnect its
 websocket, which cuts off any in-flight recognition. Only call apply_category
@@ -29,7 +29,7 @@ CATEGORY_CONFIGS = {
         "tts": {"pace": 0.97, "temperature": 0.45},
     },
     "hesitant": {
-        "stt": {"endpointing_ms": 900, "utterance_end_ms": 1500, "no_delay": False},
+        "stt": {"endpointing_ms": 900, "no_delay": False},
         "tts": {"pace": 0.87, "temperature": 0.30},
     },
     "interrupter": {
