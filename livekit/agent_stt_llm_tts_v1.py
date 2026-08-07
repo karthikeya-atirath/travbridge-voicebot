@@ -15,9 +15,12 @@ BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8000")
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io
 from livekit.plugins import google, silero, deepgram, sarvam
+from livekit.agents.metrics import STTMetrics, EOUMetrics
 from google.genai.types import HttpOptions, ThinkingConfig
 from google.oauth2.credentials import Credentials
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from speech_classifier import SpeechClassifier, TurnSignal
+from speech_tuner import apply_category
 from tools import (
     get_travel_package,
     get_all_bogo_packages,
@@ -306,6 +309,46 @@ async def my_agent(ctx: agents.JobContext):
             await asyncio.sleep(4)
             idle = time.time() - last_activity_time
             print(f"[SILENCE] {idle:.1f}s")
+
+    # ────────────────────────────────────────────────
+    #   Speech-type detection & dynamic STT/TTS tuning
+    #   Every 5 turns, classify the customer's recent speech
+    #   pattern and retune STT/TTS via speech_tuner.apply_category.
+    # ────────────────────────────────────────────────
+    speech_classifier = SpeechClassifier(window=5)
+    pending_signal = TurnSignal()
+    pending_word_count = 0
+
+    @session.on("user_input_transcribed")
+    def on_user_transcript_for_tuning(event):
+        nonlocal pending_word_count
+        if not event.is_final:
+            return
+        pending_signal.mix_ratio = SpeechClassifier.mix_ratio(event.transcript)
+        pending_word_count = len(event.transcript.split())
+
+    @session.on("user_state_changed")
+    def on_user_state_for_tuning(event):
+        if getattr(event, "new_state", None) == "speaking" and is_agent_speaking:
+            pending_signal.interrupted = True
+
+    @session.on("metrics_collected")
+    def on_metrics_for_tuning(event):
+        nonlocal pending_signal, pending_word_count
+        m = event.metrics
+        if isinstance(m, STTMetrics) and m.audio_duration > 0:
+            pending_signal.pace = pending_word_count / m.audio_duration
+        elif isinstance(m, EOUMetrics):
+            pending_signal.pause = m.end_of_utterance_delay
+            label = speech_classifier.add_turn(pending_signal)
+            pending_signal = TurnSignal()
+            pending_word_count = 0
+            if label and not is_agent_speaking:
+                print(f"[SPEECH TUNER] switching profile -> {label}")
+                try:
+                    apply_category(session, label)
+                except Exception as e:
+                    print(f"[SPEECH TUNER] apply_category failed: {e}")
 
     # ────────────────────────────────────────────────
     #               Start the session
