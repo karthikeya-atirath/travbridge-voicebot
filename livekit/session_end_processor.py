@@ -18,7 +18,6 @@ import traceback
 
 from google import genai
 from google.genai import types
-from google.oauth2.credentials import Credentials
 
 from app_logger import applog
 from opportunity_create import create_or_update_opportunity
@@ -107,17 +106,14 @@ async def _extract_with_llm(conversation_text: str) -> dict:
     prompt = _EXTRACTION_PROMPT_TEMPLATE.format(conversation_text=conversation_text)
 
     try:
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "asvamultiplayer")
         client = genai.Client(
-            vertexai=True,
-            project=project_id,
-            location="asia-south1",
-            credentials=Credentials(token="dummy-token"),
-            http_options=types.HttpOptions(base_url="http://10.160.0.5:8004")
+            vertexai=False,
+            api_key="DummyAPIKey",
+            http_options=types.HttpOptions(base_url="http://10.160.0.6:8000")
         )
 
         response = await client.aio.models.generate_content(
-            model="gemini-3.5-flash",
+            model="gemini-3.5-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.1,

@@ -13,14 +13,11 @@ print(f"[ENV] Loaded .env_{APP_ENV}")
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8000")
 
 from livekit import agents, rtc
-from livekit.agents import AgentServer, AgentSession, room_io
+from livekit.agents import AgentServer, AgentSession, room_io, TurnHandlingOptions, inference
 from livekit.plugins import google, silero, deepgram, sarvam
-from livekit.agents.metrics import STTMetrics, EOUMetrics
 from google.genai.types import HttpOptions, ThinkingConfig
-from google.oauth2.credentials import Credentials
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
-from speech_classifier import SpeechClassifier, TurnSignal
-from speech_tuner import apply_category
+from speech_tuner import attach_speech_tuner
+from interruption_guard import attach_interruption_guard
 from tools import (
     get_travel_package,
     get_all_bogo_packages,
@@ -105,12 +102,10 @@ async def my_agent(ctx: agents.JobContext):
             interim_results=True
         ),
         llm=google.LLM(
-            model="gemini-3.5-flash",
-            vertexai=True,
-            project="livekit123",
-            location="asia-south1",
-            credentials=Credentials(token="dummy-token"),
-            http_options=HttpOptions(base_url="http://10.160.0.5:8004"),
+            model="gemini-3.5-flash-lite",
+            vertexai=False,
+            api_key="DummyAPIKey",
+            http_options=HttpOptions(base_url="http://10.160.0.6:8000"),
             temperature=0.5,
         ),
         tts=sarvam.TTS(
@@ -118,6 +113,26 @@ async def my_agent(ctx: agents.JobContext):
             speaker="ritu",
             speech_sample_rate=8000,
             pace=1.0,
+        ),
+        turn_handling=TurnHandlingOptions(
+            turn_detection=inference.TurnDetector(
+                version="v1-mini"
+            ),
+            endpointing={
+                "mode": "fixed",
+                "min_delay": 0.3,
+                "max_delay": 2.5,
+            },
+            interruption = {
+                "mode": "vad",  # no LiveKit Cloud -> "adaptive" isn't usable
+                "min_words": 2,  # ignore 0-1 word blips (STT-based, local)
+                "discard_audio_if_uninterruptible": False,  # keep STT running during non-interruptible speech (e.g. the fixed greeting / reprompts)
+                "false_interruption_timeout": 1.2,
+                "resume_false_interruption": True,
+            },
+            preemptive_generation={
+                "preemptive_tts": False,
+            },
         ),
         vad=silero.VAD.load(
             activation_threshold=0.55,
@@ -127,10 +142,6 @@ async def my_agent(ctx: agents.JobContext):
             sample_rate=16000,
             force_cpu=True,
         ),
-        turn_detection=MultilingualModel(),
-        min_endpointing_delay=0.25,
-        max_endpointing_delay=0.25,
-        preemptive_generation=True,
         tools=[
             get_travel_package, 
             get_fare_calendar,
@@ -315,41 +326,10 @@ async def my_agent(ctx: agents.JobContext):
     #   Every 5 turns, classify the customer's recent speech
     #   pattern and retune STT/TTS via speech_tuner.apply_category.
     # ────────────────────────────────────────────────
-    speech_classifier = SpeechClassifier(window=5)
-    pending_signal = TurnSignal()
-    pending_word_count = 0
+    # attach_speech_tuner(session, session_label=customer_id)
 
-    @session.on("user_input_transcribed")
-    def on_user_transcript_for_tuning(event):
-        nonlocal pending_word_count
-        if not event.is_final:
-            return
-        pending_signal.mix_ratio = SpeechClassifier.mix_ratio(event.transcript)
-        pending_word_count = len(event.transcript.split())
-
-    @session.on("user_state_changed")
-    def on_user_state_for_tuning(event):
-        if getattr(event, "new_state", None) == "speaking" and is_agent_speaking:
-            pending_signal.interrupted = True
-
-    @session.on("metrics_collected")
-    def on_metrics_for_tuning(event):
-        nonlocal pending_signal, pending_word_count
-        m = event.metrics
-        if isinstance(m, STTMetrics) and m.audio_duration > 0:
-            pending_signal.pace = pending_word_count / m.audio_duration
-        elif isinstance(m, EOUMetrics):
-            pending_signal.pause = m.end_of_utterance_delay
-            label = speech_classifier.add_turn(pending_signal)
-            pending_signal = TurnSignal()
-            pending_word_count = 0
-            if label and not is_agent_speaking:
-                print(f"[SPEECH TUNER] switching profile -> {label}")
-                try:
-                    apply_category(session, label)
-                except Exception as e:
-                    print(f"[SPEECH TUNER] apply_category failed: {e}")
-
+    attach_interruption_guard(session, session_label=customer_id)
+    
     # ────────────────────────────────────────────────
     #               Start the session
     # ────────────────────────────────────────────────
@@ -383,10 +363,14 @@ async def my_agent(ctx: agents.JobContext):
 if __name__ == "__main__":
     from livekit.agents import WorkerOptions
 
+    # AGENT_NAME unset (e.g. in .env_dev) -> automatic dispatch, so the
+    # LiveKit Agents Playground can join without an explicit dispatch request.
+    # AGENT_NAME set (e.g. in .env_prod) -> explicit dispatch, required by
+    # c-zen-bridge/telephone.py which calls RoomAgentDispatch(agent_name=...).
     agents.cli.run_app(
         WorkerOptions(
             entrypoint_fnc=my_agent,
-            agent_name=os.environ.get("AGENT_NAME", "tc-travel-bot"),
+            agent_name=os.environ.get("AGENT_NAME", ""),
             port=int(os.environ.get("AGENT_PORT", 8081))
         )
     )

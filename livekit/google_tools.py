@@ -12,7 +12,6 @@ import google.auth.transport.requests
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
-from google.oauth2.credentials import Credentials
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 from livekit.agents import function_tool, RunContext
 
@@ -26,7 +25,7 @@ import chat_history as _ch_module
 
 
 GCP_LOCATION = os.getenv("GCP_LOCATION", "asia-south1").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 
 # Removed GOOGLE_APPLICATION_CREDENTIALS check as we use GOOGLE_API_KEY
 
@@ -46,11 +45,9 @@ def _get_vertex_client() -> genai.Client:
     global _vertex_client
     if _vertex_client is None:
         _vertex_client = genai.Client(
-            vertexai=True,
-            project="livekit123",
-            location="asia-south1",
-            credentials=Credentials(token="dummy-token"),
-            http_options=types.HttpOptions(base_url="http://10.160.0.5:8004")
+            vertexai=False,
+            api_key="DummyAPIKey",
+            http_options=types.HttpOptions(base_url="http://10.160.0.6:8000")
         )
     return _vertex_client
 

@@ -10,7 +10,6 @@ from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io
 from livekit.plugins import google, silero, deepgram, sarvam
 from google.genai.types import HttpOptions, ThinkingConfig
-from google.oauth2.credentials import Credentials
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from tools import (
     get_travel_package,
@@ -68,12 +67,10 @@ async def my_agent(ctx: agents.JobContext):
             mode="codemix",
         ),
         llm=google.LLM(
-            model="gemini-3.5-flash",
-            vertexai=True,
-            project="livekit123",
-            location="asia-south1",
-            credentials=Credentials(token="dummy-token"),
-            http_options=HttpOptions(base_url="http://10.160.0.5:8005"),
+            model="gemini-3.5-flash-lite",
+            vertexai=False,
+            api_key="DummyAPIKey",
+            http_options=HttpOptions(base_url="http://10.160.0.6:8000"),
             temperature=0.5,
         ),
         vad=silero.VAD.load(

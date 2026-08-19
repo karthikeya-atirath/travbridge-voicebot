@@ -78,7 +78,7 @@ Jinja2==3.1.6
 jiter==0.10.0
 jmespath==1.1.0
 joblib==1.5.1
-json_repair==0.59.10
+json_repair==0.60.1
 jsonpatch==1.33
 jsonpointer==3.0.0
 jsonschema==4.25.0
@@ -91,9 +91,10 @@ langsmith==0.4.53
 lark==1.2.2
 lazy_loader==0.4
 librosa==0.11.0
-livekit==1.1.8
-livekit-agents==1.6.0
+livekit==1.1.14
+livekit-agents==1.6.10
 livekit-api==1.1.0
+livekit-local-inference==0.2.7
 livekit-blingfire==1.1.0
 livekit-plugins-cartesia==1.2.5
 livekit-plugins-deepgram==1.5.13

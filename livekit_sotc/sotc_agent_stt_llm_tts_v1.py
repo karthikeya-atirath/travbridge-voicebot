@@ -16,8 +16,9 @@ from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io
 from livekit.plugins import google, silero, deepgram, sarvam
 from google.genai.types import HttpOptions, ThinkingConfig
-from google.oauth2.credentials import Credentials
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from speech_tuner import attach_speech_tuner
+from interruption_guard import attach_interruption_guard
 from tools import (
     get_travel_package,
     get_all_bogo_packages,
@@ -110,12 +111,10 @@ async def my_agent(ctx: agents.JobContext):
             interim_results=True
         ),
         llm=google.LLM(
-            model="gemini-3.5-flash",
-            vertexai=True,
-            project="livekit123",
-            location="asia-south1",
-            credentials=Credentials(token="dummy-token"),
-            http_options=HttpOptions(base_url="http://10.160.0.5:8005"),
+            model="gemini-3.5-flash-lite",
+            vertexai=False,
+            api_key="DummyAPIKey",
+            http_options=HttpOptions(base_url="http://10.160.0.6:8000"),
             temperature=0.5,
         ),
         tts=sarvam.TTS(
@@ -132,10 +131,16 @@ async def my_agent(ctx: agents.JobContext):
             sample_rate=16000,
             force_cpu=True,
         ),
-        turn_detection=MultilingualModel(),
-        min_endpointing_delay=0.25,
-        max_endpointing_delay=0.25,
-        preemptive_generation=True,
+        turn_handling={
+            "turn_detection": MultilingualModel(),
+            "endpointing": {"min_delay": 0.25, "max_delay": 0.25},
+            "interruption": {
+                "mode": "vad",  # no LiveKit Cloud -> "adaptive" isn't usable
+                "min_words": 2,  # ignore 0-1 word blips (STT-based, local)
+                "discard_audio_if_uninterruptible": False,  # keep STT running during non-interruptible speech (e.g. the fixed greeting / reprompts)
+            },
+            "preemptive_generation": {"enabled": True},
+        },
         tools=[
             get_travel_package,
             get_fare_calendar,
@@ -315,6 +320,14 @@ async def my_agent(ctx: agents.JobContext):
             await asyncio.sleep(4)
             idle = time.time() - last_activity_time
             print(f"[SILENCE] {idle:.1f}s")
+
+    # ────────────────────────────────────────────────
+    #   Speech-type detection & dynamic STT/TTS tuning
+    #   Every 5 turns, classify the customer's recent speech
+    #   pattern and retune STT/TTS via speech_tuner.apply_category.
+    # ────────────────────────────────────────────────
+    attach_speech_tuner(session, session_label=customer_id)
+    attach_interruption_guard(session, session_label=customer_id)
 
     # ────────────────────────────────────────────────
     #               Start the session
