@@ -19,6 +19,7 @@ from google.genai.types import HttpOptions, ThinkingConfig
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from speech_tuner import attach_speech_tuner
 from interruption_guard import attach_interruption_guard
+from call_metrics import attach_call_metrics
 from tools import (
     get_travel_package,
     get_all_bogo_packages,
@@ -327,7 +328,10 @@ async def my_agent(ctx: agents.JobContext):
     #   pattern and retune STT/TTS via speech_tuner.apply_category.
     # ────────────────────────────────────────────────
     attach_speech_tuner(session, session_label=customer_id)
-    attach_interruption_guard(session, session_label=customer_id)
+    call_metrics = attach_call_metrics(session, session_label=customer_id)
+    attach_interruption_guard(
+        session, session_label=customer_id, on_event=call_metrics.record_guard_event
+    )
 
     # ────────────────────────────────────────────────
     #               Start the session

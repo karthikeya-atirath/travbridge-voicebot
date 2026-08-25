@@ -1,18 +1,32 @@
-"""Per-speech-type STT/TTS parameter table + single apply dispatcher.
+"""Per-speech-type STT/TTS/endpointing parameter table + single apply dispatcher.
 
-This project's voice agent keeps Deepgram as its STT provider, so the STT
-knobs below are Deepgram's actual `update_options()` params (endpointing_ms,
-no_delay) rather than Sarvam's VAD-frame params — same intent (how
-aggressively to decide the customer stopped talking), mapped to the
-provider actually in use. TTS knobs are Sarvam's, unchanged.
+Values below are the exact fast_aggressive / slow_steady / micro_pauses /
+hesitant / interruption_heavy figures supplied for this project (midpoint
+picked wherever the source gave a range), split across four groups by what
+each one actually controls in this stack:
 
-NOTE: calling STT.update_options() forces Deepgram to reconnect its
-websocket, which cuts off any in-flight recognition. Only call apply_category
-between turns (never while the customer is mid-utterance).
+- endpointing: LiveKit's own turn-taking wait time. Applied live via
+  ``AgentSession.update_options(endpointing_opts=...)`` (a documented,
+  reconnect-free call — only the given keys change, the rest of the
+  session's endpointing config is left alone).
+- interruption settings are intentionally not tuned here. The interruption
+  guard is their single owner, so native VAD cannot race semantic filler handling.
+- tts: Sarvam's speaking pace, applied via ``TTS.update_options()``.
+- stt: Deepgram nova-2 knobs. NOTE the source table's ``utterance_end_ms``
+  has no equivalent on this plugin's nova-2 wrapper (livekit-plugins-deepgram
+  1.5.13) — it only exists on Deepgram's newer Flux model (``deepgram.STTv2``),
+  which this project isn't using, so it's intentionally left out rather than
+  guessed at.
+
+NOTE: calling STT.update_options() only takes effect on Deepgram's next
+websocket reconnect, and forcing a reconnect mid-utterance would cut off
+in-flight recognition. Only call apply_category between turns (never while
+the customer is mid-utterance).
 """
 
 from __future__ import annotations
 
+import re
 import time
 
 from livekit.agents import AgentSession
@@ -21,33 +35,58 @@ from livekit.agents.metrics import EOUMetrics
 from speech_classifier import SpeechClassifier, TurnSignal
 from app_logger import applog
 
+_TUNER_BACKCHANNELS = frozenset({
+    "hm", "hmm", "hmmm", "mm", "mmm", "uh", "um", "uh huh", "uh-huh",
+    "mm hmm", "mm-hmm", "ok", "okay", "yeah", "yes", "right", "alright",
+    "i see", "got it", "haan", "han", "हम्म", "हां", "हाँ", "ठीक है",
+})
+
+
+def _is_tuner_backchannel(text: str) -> bool:
+    normalized = " ".join(re.sub(r"[^\w\u0900-\u097f-]+", " ", text.casefold()).split())
+    return normalized in _TUNER_BACKCHANNELS
+
 CATEGORY_CONFIGS = {
-    "fast_fluent": {
-        "stt": {"endpointing_ms": 150, "no_delay": True},
-        "tts": {"pace": 1.15, "temperature": 0.55},
+    "fast_aggressive": {
+        "endpointing": {"min_delay": 0.175},
+        "tts": {"pace": 1.025},
+        "stt": {"endpointing_ms": 125, "interim_results": True, "no_delay": True},
     },
     "slow_steady": {
-        "stt": {"endpointing_ms": 700, "no_delay": False},
-        "tts": {"pace": 0.90, "temperature": 0.35},
+        "endpointing": {"min_delay": 0.45},
+        "tts": {"pace": 0.90},
+        "stt": {"endpointing_ms": 400, "interim_results": False, "no_delay": False},
     },
-    "micro_pause": {
-        "stt": {"endpointing_ms": 450, "no_delay": False},
-        "tts": {"pace": 0.97, "temperature": 0.45},
+    "micro_pauses": {
+        "endpointing": {"min_delay": 0.50},
+        "tts": {"pace": 0.925},
+        "stt": {"endpointing_ms": 500, "interim_results": True, "no_delay": False},
     },
     "hesitant": {
-        "stt": {"endpointing_ms": 900, "no_delay": False},
-        "tts": {"pace": 0.87, "temperature": 0.30},
+        "endpointing": {"min_delay": 0.60},
+        "tts": {"pace": 0.875},
+        "stt": {"endpointing_ms": 500, "interim_results": True, "no_delay": False},
     },
-    "interrupter": {
-        "stt": {"endpointing_ms": 150, "no_delay": True},
-        "tts": {"pace": 1.05, "temperature": 0.50},
+    "interruption_heavy": {
+        "endpointing": {"min_delay": 0.175},
+        "tts": {"pace": 1.025},
+        "stt": {"endpointing_ms": 75, "interim_results": True, "no_delay": True},
     },
 }
 
 
+CLASSIFIER_PROFILE_MAP: dict[str, str] = {
+    "fast_fluent": "fast_aggressive",
+    "micro_pause": "micro_pauses",
+    "interrupter": "interruption_heavy",
+}
+
+
 def apply_category(session: AgentSession, category: str) -> None:
-    """Push a category's STT + TTS params into the live session."""
-    config = CATEGORY_CONFIGS[category]
+    """Push a category's endpointing/STT/TTS params into the live session."""
+    profile = CLASSIFIER_PROFILE_MAP.get(category, category)
+    config = CATEGORY_CONFIGS[profile]
+    session.update_options(endpointing_opts=config["endpointing"])
     if session.stt is not None:
         session.stt.update_options(**config["stt"])
     if session.tts is not None:
@@ -77,6 +116,7 @@ def attach_speech_tuner(
     pending_transcript = ""
     turn_index = 0
     turn_start_time: float | None = None
+    pending_overlap = False
     agent_speaking = {"value": False}
     label_tag = session_label or "session"
 
@@ -94,15 +134,16 @@ def attach_speech_tuner(
         if not event.is_final:
             return
         pending_signal.mix_ratio = SpeechClassifier.mix_ratio(event.transcript)
+        pending_signal.interrupted = pending_overlap and not _is_tuner_backchannel(event.transcript)
         pending_word_count = len(event.transcript.split())
         pending_transcript = event.transcript
 
     @session.on("user_state_changed")
     def _on_user_state(event):
-        nonlocal turn_start_time
+        nonlocal turn_start_time, pending_overlap
         if getattr(event, "new_state", None) == "speaking":
             if agent_speaking["value"]:
-                pending_signal.interrupted = True
+                pending_overlap = True
             # Only stamp the *first* speaking-onset of a turn — VAD can flicker
             # speaking/listening on brief mid-sentence pauses, and resetting the
             # clock on those would undercount the turn's real duration.
@@ -111,13 +152,22 @@ def attach_speech_tuner(
 
     @session.on("metrics_collected")
     def _on_metrics(event):
-        nonlocal pending_signal, pending_word_count, pending_transcript, turn_index, turn_start_time
+        nonlocal pending_signal, pending_word_count, pending_transcript, turn_index, turn_start_time, pending_overlap
         m = event.metrics
         if isinstance(m, EOUMetrics):
+            # Some sessions emit duplicate/empty EOU metrics. They are not user
+            # turns and must not advance the five-turn classification window.
+            if not pending_transcript.strip():
+                turn_start_time = None
+                pending_overlap = False
+                pending_signal = TurnSignal()
+                return
+
             if turn_start_time is not None:
-                duration = time.time() - turn_start_time
-                if duration > 0 and pending_word_count > 0:
-                    pending_signal.pace = pending_word_count / duration
+                elapsed = time.time() - turn_start_time
+                speech_duration = max(0.05, elapsed - m.end_of_utterance_delay)
+                if pending_word_count > 0:
+                    pending_signal.pace = pending_word_count / speech_duration
                 turn_start_time = None
             pending_signal.pause = m.end_of_utterance_delay
             turn_index += 1
@@ -133,6 +183,7 @@ def attach_speech_tuner(
             pending_signal = TurnSignal()
             pending_word_count = 0
             pending_transcript = ""
+            pending_overlap = False
 
             if label:
                 applied = False
@@ -149,9 +200,13 @@ def attach_speech_tuner(
                         applog.error(f"[SPEECH TUNER][{label_tag}] apply_category failed: {e}")
                         error = e
 
-                config = CATEGORY_CONFIGS.get(label)
+                profile = CLASSIFIER_PROFILE_MAP.get(label, label)
+                config = CATEGORY_CONFIGS.get(profile)
                 if applied and config:
-                    outcome = f"APPLIED -> stt={config['stt']}, tts={config['tts']}"
+                    outcome = (
+                        f"APPLIED -> endpointing={config['endpointing']}, "
+                        f"stt={config['stt']}, tts={config['tts']}"
+                    )
                 elif error is not None:
                     outcome = f"FAILED TO APPLY -> {error}"
                 elif skip_reason:

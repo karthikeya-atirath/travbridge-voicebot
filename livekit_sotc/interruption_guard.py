@@ -40,7 +40,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Final
+from typing import Callable, Final
 
 from livekit.agents import AgentSession
 
@@ -80,7 +80,9 @@ SAFE_BACKCHANNELS: Final[frozenset[str]] = frozenset(
         "uh",
         "um",
         "uh huh",
+        "uh-huh",
         "mm hmm",
+        "mm-hmm",
 
         # Hindi / Devanagari vocal sounds
         "हम्म",
@@ -263,12 +265,17 @@ class InterruptionGuard:
         self,
         session: AgentSession,
         session_label: str = "session",
+        on_event: Callable[[str, dict], None] | None = None,
     ) -> None:
 
         self.session = session
         self.session_label = session_label
 
         self.state = GuardState()
+
+        # Optional observer for evaluation/metrics (e.g. call_metrics.py).
+        # Never influences a decision — purely notified after the fact.
+        self.on_event = on_event
 
     # ------------------------------------------------------------------
     # AGENT STATE
@@ -429,6 +436,23 @@ class InterruptionGuard:
             f"transcript={raw_text!r}"
         )
 
+        if self.on_event is not None:
+            speech_duration = (
+                time.monotonic() - self.state.user_speech_started_at
+                if self.state.user_speech_started_at is not None
+                else -1.0
+            )
+            self.on_event(
+                "decision",
+                {
+                    "decision": decision.value,
+                    "reason": reason,
+                    "is_final": is_final,
+                    "speech_duration": speech_duration,
+                    "posture": self.state.posture.value,
+                },
+            )
+
         if decision == InterruptDecision.INTERRUPT:
             self._interrupt(reason)
 
@@ -448,16 +472,8 @@ class InterruptionGuard:
         # 1. SAFE BACKCHANNEL
         # --------------------------------------------------------------
 
-        if transcript in SAFE_BACKCHANNELS:
-
-            return (
-                InterruptDecision.IGNORE,
-                "safe_backchannel",
-            )
-
-        # --------------------------------------------------------------
-        # 2. AGENT ASKED A QUESTION
-        #
+        # Sounds like "uh huh" and "mm hmm" are context-sensitive.
+        # When a question was asked, let the answer branch classify them.
         # This is the most important custom behavior.
         #
         # Native min_words=2 would normally ignore:
@@ -490,6 +506,14 @@ class InterruptionGuard:
             return (
                 InterruptDecision.DEFER_TO_NATIVE,
                 "multiword_reply_native_gate",
+            )
+
+        # Ignore ambiguous backchannels only while the agent is explaining.
+        if transcript in SAFE_BACKCHANNELS:
+
+            return (
+                InterruptDecision.IGNORE,
+                "safe_backchannel",
             )
 
         # --------------------------------------------------------------
@@ -645,6 +669,9 @@ class InterruptionGuard:
             f"resumed={resumed}"
         )
 
+        if self.on_event is not None:
+            self.on_event("false_interruption", {"resumed": resumed})
+
 
 # ---------------------------------------------------------------------------
 # ATTACH
@@ -654,11 +681,13 @@ class InterruptionGuard:
 def attach_interruption_guard(
     session: AgentSession,
     session_label: str | None = None,
+    on_event: Callable[[str, dict], None] | None = None,
 ) -> InterruptionGuard:
 
     guard = InterruptionGuard(
         session=session,
         session_label=session_label or "session",
+        on_event=on_event,
     )
 
     @session.on("agent_state_changed")

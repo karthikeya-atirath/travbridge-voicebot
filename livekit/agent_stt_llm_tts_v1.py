@@ -11,13 +11,17 @@ print(f"[ENV] Loaded .env_{APP_ENV}")
 
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8000")
+ENABLE_SPEECH_TUNING = os.environ.get("ENABLE_SPEECH_TUNING", "true").lower() == "true"
+SPEECH_PROFILE = os.environ.get("SPEECH_PROFILE", "fast_aggressive")
+MAX_ENDPOINTING_DELAY = float(os.environ.get("MAX_ENDPOINTING_DELAY", "1.5"))
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io, TurnHandlingOptions, inference
 from livekit.plugins import google, silero, deepgram, sarvam
 from google.genai.types import HttpOptions, ThinkingConfig
-from speech_tuner import attach_speech_tuner
-from interruption_guard import attach_interruption_guard
+from speech_tuner import attach_speech_tuner, CATEGORY_CONFIGS
+from interruption_guard import InterruptionGuard, attach_interruption_guard
+from call_metrics import attach_call_metrics
 from tools import (
     get_travel_package,
     get_all_bogo_packages,
@@ -45,16 +49,32 @@ REPROMPT_MESSAGES = [
 
 class Assistant(agents.Agent):
     def __init__(self, full_instructions: str) -> None:
-        super().__init__(
-            instructions=full_instructions,
-        )
+        super().__init__(instructions=full_instructions)
+        self.interruption_guard: InterruptionGuard | None = None
 
-    async def on_user_turn_completed(
-        self,
-        turn_ctx: agents.ChatContext,
-        new_message: agents.llm.ChatMessage,
-    ) -> None | agents.llm.LLMStream:
-        return None
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        """Capture generated text so posture is available during TTS playback."""
+        collected_text = ""
+        async for chunk in agents.Agent.default.llm_node(
+            self, chat_ctx, tools, model_settings
+        ):
+            delta = getattr(chunk, "delta", None)
+            content = getattr(delta, "content", None)
+            if isinstance(content, str):
+                collected_text += content
+                # Update at completed clause boundaries before the chunk reaches
+                # TTS, avoiding posture from the previous response during playback.
+                if (
+                    self.interruption_guard is not None
+                    and collected_text.rstrip().endswith(("?", ".", "!", "।"))
+                ):
+                    self.interruption_guard.set_assistant_text(
+                        collected_text, source="llm_clause"
+                    )
+            yield chunk
+
+        if self.interruption_guard is not None and collected_text.strip():
+            self.interruption_guard.set_assistant_text(collected_text, source="llm_complete")
 
 
 server = AgentServer()
@@ -95,11 +115,20 @@ async def my_agent(ctx: agents.JobContext):
     # ────────────────────────────────────────────────
     #               Session Configuration
     # ────────────────────────────────────────────────
+    # Start direct calls on the responsive profile, then adapt every five turns.
+    # Set ENABLE_SPEECH_TUNING=false only when a fixed profile is required.
+    profile_name = SPEECH_PROFILE if SPEECH_PROFILE in CATEGORY_CONFIGS else "fast_aggressive"
+    _default_profile = CATEGORY_CONFIGS[profile_name]
+    applog.info(
+        f"[SPEECH CONFIG] profile={profile_name} adaptive_tuning={ENABLE_SPEECH_TUNING}"
+    )
     session = AgentSession(
         stt=deepgram.STT(
             model="nova-2",
             language="hi",
-            interim_results=True
+            endpointing_ms=_default_profile["stt"]["endpointing_ms"],
+            interim_results=_default_profile["stt"]["interim_results"],
+            no_delay=_default_profile["stt"]["no_delay"],
         ),
         llm=google.LLM(
             model="gemini-3.5-flash-lite",
@@ -112,23 +141,26 @@ async def my_agent(ctx: agents.JobContext):
             model="bulbul:v3",
             speaker="ritu",
             speech_sample_rate=8000,
-            pace=1.0,
+            pace=_default_profile["tts"]["pace"],
         ),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(
                 version="v1-mini"
             ),
             endpointing={
-                "mode": "fixed",
-                "min_delay": 0.3,
-                "max_delay": 2.5,
+                "mode": "dynamic",
+                "min_delay": _default_profile["endpointing"]["min_delay"],
+                "max_delay": MAX_ENDPOINTING_DELAY,
             },
-            interruption = {
-                "mode": "vad",  # no LiveKit Cloud -> "adaptive" isn't usable
-                "min_words": 2,  # ignore 0-1 word blips (STT-based, local)
-                "discard_audio_if_uninterruptible": False,  # keep STT running during non-interruptible speech (e.g. the fixed greeting / reprompts)
-                "false_interruption_timeout": 1.2,
-                "resume_false_interruption": True,
+            interruption={
+                # The semantic guard is the single interruption owner. Native
+                # interruption cannot be cancelled by an IGNORE decision after
+                # the transcript event, so disable that competing path. Forced
+                # guard interruptions still work and STT keeps listening.
+                "enabled": False,
+                "discard_audio_if_uninterruptible": False,
+                "false_interruption_timeout": None,
+                "resume_false_interruption": False,
             },
             preemptive_generation={
                 "preemptive_tts": False,
@@ -322,20 +354,24 @@ async def my_agent(ctx: agents.JobContext):
             print(f"[SILENCE] {idle:.1f}s")
 
     # ────────────────────────────────────────────────
-    #   Speech-type detection & dynamic STT/TTS tuning
-    #   Every 5 turns, classify the customer's recent speech
-    #   pattern and retune STT/TTS via speech_tuner.apply_category.
+    # Adaptive classification and tuning are enabled by default. Each five-turn
+    # window can move the live session to the matching speech profile.
     # ────────────────────────────────────────────────
-    # attach_speech_tuner(session, session_label=customer_id)
+    if ENABLE_SPEECH_TUNING:
+        attach_speech_tuner(session, session_label=customer_id)
+    call_metrics = attach_call_metrics(session, session_label=customer_id)
+    interruption_guard = attach_interruption_guard(
+        session, session_label=customer_id, on_event=call_metrics.record_guard_event
+    )
+    assistant = Assistant(full_instructions=full_instructions)
+    assistant.interruption_guard = interruption_guard
 
-    attach_interruption_guard(session, session_label=customer_id)
-    
     # ────────────────────────────────────────────────
     #               Start the session
     # ────────────────────────────────────────────────
     await session.start(
         room=ctx.room,
-        agent=Assistant(full_instructions=full_instructions),
+        agent=assistant,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
     
