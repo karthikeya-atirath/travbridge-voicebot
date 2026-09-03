@@ -12,8 +12,10 @@ print(f"[ENV] Loaded .env_{APP_ENV}")
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8000")
 ENABLE_SPEECH_TUNING = os.environ.get("ENABLE_SPEECH_TUNING", "true").lower() == "true"
-SPEECH_PROFILE = os.environ.get("SPEECH_PROFILE", "fast_aggressive")
-MAX_ENDPOINTING_DELAY = float(os.environ.get("MAX_ENDPOINTING_DELAY", "1.5"))
+SPEECH_PROFILE = os.environ.get("SPEECH_PROFILE", "slow_steady")
+# The semantic turn detector releases clearly complete turns at min_delay.
+# This ceiling is only the patience budget for uncertain, incomplete turns.
+MAX_ENDPOINTING_DELAY = float(os.environ.get("MAX_ENDPOINTING_DELAY", "1.2"))
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io, TurnHandlingOptions, inference
@@ -37,6 +39,18 @@ from app_logger import applog
 from google_tools import get_destination_info, get_destination_food, get_destination_weather, get_destination_sightseeing, get_destination_activities, get_destination_visa_info, get_destination_hotels, recommend_destinations, get_destination_flights, create_custom_itinerary, update_custom_itinerary
 
 
+# Spoken automatically while the agent is in the "thinking" state (LLM/tool
+# round trip) for longer than THINKING_FILLER_DELAY, instead of relying on
+# the prompt to remember to say one — the prompt can't guarantee it fires,
+# this can. Below the delay, a round trip is fast enough that playing one
+# would add more perceived latency (waiting for it to finish) than it masks.
+THINKING_FILLERS = [
+    "Hold on just a second, let me check that for you…",
+    "Let me look up the latest details…",
+    "Give me one moment please…",
+]
+THINKING_FILLER_DELAY = 0.7
+
 # Messages used for re-engaging the user during long silence
 REPROMPT_MESSAGES = [
     "Are you still there? I'm happy to continue helping with your travel plans...",
@@ -53,7 +67,7 @@ class Assistant(agents.Agent):
         self.interruption_guard: InterruptionGuard | None = None
 
     async def llm_node(self, chat_ctx, tools, model_settings):
-        """Capture generated text so posture is available during TTS playback."""
+        """Capture generated text so posture is available during playback."""
         collected_text = ""
         async for chunk in agents.Agent.default.llm_node(
             self, chat_ctx, tools, model_settings
@@ -62,8 +76,6 @@ class Assistant(agents.Agent):
             content = getattr(delta, "content", None)
             if isinstance(content, str):
                 collected_text += content
-                # Update at completed clause boundaries before the chunk reaches
-                # TTS, avoiding posture from the previous response during playback.
                 if (
                     self.interruption_guard is not None
                     and collected_text.rstrip().endswith(("?", ".", "!", "।"))
@@ -74,7 +86,44 @@ class Assistant(agents.Agent):
             yield chunk
 
         if self.interruption_guard is not None and collected_text.strip():
-            self.interruption_guard.set_assistant_text(collected_text, source="llm_complete")
+            self.interruption_guard.set_assistant_text(
+                collected_text, source="llm_complete"
+            )
+
+    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        """Veto generation for turns that carry no new meaning.
+
+        Two independent reasons a finalized transcript should never reach
+        the LLM, both computed elsewhere but only ever used to gate TTS
+        audio cutoff there — nothing stopped the same transcript from
+        still being handed to the LLM as the next turn once the agent
+        stopped talking:
+
+        - is_non_answer_for_current_posture: classify_interruption already
+          recognizes filler ("ok", "hmm") replied to a still-open
+          WH-question as non-content, which used to let a bare "ok" read
+          as an answer and advance the slot-filling flow.
+        - is_redundant_turn: turn evolution already recognizes a
+          restatement/subset of the active committed turn as adding
+          nothing new, which used to still get a fresh (redundant) reply
+          out of the LLM once the agent finished speaking.
+
+        StopResponse drops the turn entirely (no LLM call, not added to
+        history) so the agent simply keeps waiting / doesn't repeat itself.
+        """
+        if self.interruption_guard is None:
+            return
+        text = new_message.text_content or ""
+        if self.interruption_guard.is_non_answer_for_current_posture(text):
+            applog.info(
+                f"[ASSISTANT] suppressing non-answer filler as LLM turn: text={text!r}"
+            )
+            raise agents.StopResponse()
+        if self.interruption_guard.is_redundant_turn(text):
+            applog.info(
+                f"[ASSISTANT] suppressing redundant turn as LLM turn: text={text!r}"
+            )
+            raise agents.StopResponse()
 
 
 server = AgentServer()
@@ -115,9 +164,16 @@ async def my_agent(ctx: agents.JobContext):
     # ────────────────────────────────────────────────
     #               Session Configuration
     # ────────────────────────────────────────────────
-    # Start direct calls on the responsive profile, then adapt every five turns.
+    # Start every call on the neutral profile (moderate pace/pause tolerance,
+    # per speech_classifier.py's signatures) rather than an aggressive one:
+    # the classifier has no evidence yet for the first `window` turns, and
+    # starting "fast_aggressive" (125ms STT endpointing, 175ms turn min_delay)
+    # blindly assumed every caller was a fast talker, splitting a normal
+    # mid-sentence breathing pause into two turns and getting two separate
+    # agent responses out of one utterance. Adapts to the caller's actual
+    # pattern every five turns after that.
     # Set ENABLE_SPEECH_TUNING=false only when a fixed profile is required.
-    profile_name = SPEECH_PROFILE if SPEECH_PROFILE in CATEGORY_CONFIGS else "fast_aggressive"
+    profile_name = SPEECH_PROFILE if SPEECH_PROFILE in CATEGORY_CONFIGS else "slow_steady"
     _default_profile = CATEGORY_CONFIGS[profile_name]
     applog.info(
         f"[SPEECH CONFIG] profile={profile_name} adaptive_tuning={ENABLE_SPEECH_TUNING}"
@@ -168,7 +224,7 @@ async def my_agent(ctx: agents.JobContext):
         ),
         vad=silero.VAD.load(
             activation_threshold=0.55,
-            min_silence_duration=0.6,
+            min_silence_duration=0.4,
             min_speech_duration=0.15,
             prefix_padding_duration=0.15,
             sample_rate=16000,
@@ -276,6 +332,31 @@ async def my_agent(ctx: agents.JobContext):
             is_agent_speaking = True
         elif new in ("idle", "listening", "thinking"):
             is_agent_speaking = False
+
+    thinking_filler_task: asyncio.Task | None = None
+
+    async def _speak_thinking_filler():
+        try:
+            await asyncio.sleep(THINKING_FILLER_DELAY)
+            # add_to_chat_ctx=False: keeps this out of conversation_item_added
+            # entirely, so it can never overwrite InterruptionGuard's posture
+            # (which only reacts to real assistant replies) with a throwaway
+            # filler line.
+            await session.say(
+                random.choice(THINKING_FILLERS),
+                allow_interruptions=True,
+                add_to_chat_ctx=False,
+            )
+        except asyncio.CancelledError:
+            pass
+
+    @session.on("agent_state_changed")
+    def on_thinking_filler_state(event):
+        nonlocal thinking_filler_task
+        if thinking_filler_task is not None and not thinking_filler_task.done():
+            thinking_filler_task.cancel()
+        if getattr(event, "new_state", None) == "thinking":
+            thinking_filler_task = asyncio.create_task(_speak_thinking_filler())
 
     @session.on("user_state_changed")
     def on_user_state_changed(event):

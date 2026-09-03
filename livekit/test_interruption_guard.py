@@ -6,6 +6,7 @@ from interruption_guard import (
     AgentPosture,
     InterruptDecision,
     InterruptionGuard,
+    classify_assistant_sentence,
     classify_interruption,
     infer_agent_posture,
     normalize_text,
@@ -31,6 +32,32 @@ class InterruptionPolicyTests(unittest.TestCase):
     def test_explanation_is_not_misclassified_by_earlier_question(self):
         text = "Why Paris? It has direct flights and better availability."
         self.assertEqual(infer_agent_posture(text), AgentPosture.EXPLAINING)
+
+    def test_confirmation_ending_requires_a_whole_word(self):
+        # Regression: CONFIRMATION_ENDING_PATTERN used to substring-match
+        # the tail of an unrelated word ("look"/"book" end in "ok",
+        # "alright" ends in "right", "incorrect" ends in "correct"),
+        # misreading an ordinary statement as a yes/no question.
+        for text in (
+            "Let us have a look.",
+            "I will book that for you.",
+            "That sounds great, alright.",
+            "That does not sound incorrect.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    classify_assistant_sentence(text).posture, AgentPosture.EXPLAINING
+                )
+        for text in (
+            "You want to continue, right?",
+            "That is correct?",
+            "Ye theek hai na?",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    classify_assistant_sentence(text).posture,
+                    AgentPosture.AWAITING_CONFIRMATION,
+                )
 
     def test_commands_interrupt_immediately(self):
         self.assertEqual(self.decide("रुको", final=False, duration=0.1), InterruptDecision.INTERRUPT)
@@ -87,6 +114,26 @@ class InterruptionPolicyTests(unittest.TestCase):
                     self.decide(text, posture=AgentPosture.AWAITING_ANSWER),
                     InterruptDecision.IGNORE,
                 )
+
+    def test_clarification_request_has_separate_posture(self):
+        self.assertEqual(
+            infer_agent_posture("Could you repeat that?"),
+            AgentPosture.AWAITING_CLARIFICATION,
+        )
+
+    def test_filler_does_not_interrupt_clarification(self):
+        for text in ("hmm", "okay", "uh huh", "yeah okay"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.decide(text, posture=AgentPosture.AWAITING_CLARIFICATION),
+                    InterruptDecision.IGNORE,
+                )
+
+    def test_meaningful_clarification_interrupts(self):
+        self.assertEqual(
+            self.decide("I said December", posture=AgentPosture.AWAITING_CLARIFICATION),
+            InterruptDecision.INTERRUPT,
+        )
 
     def test_value_answers_information_question(self):
         self.assertEqual(
@@ -159,6 +206,32 @@ class InterruptionPolicyTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(infer_agent_posture(text), AgentPosture.AWAITING_ANSWER)
 
+    def test_hindi_kis_word_anywhere_is_not_a_confirmation(self):
+        # Regression: a polite "क्या आप ... चाहेंगे" opener reads like a
+        # yes/no confirmation, but "किस city से" ("which city") embedded in
+        # it means the sentence actually wants a value. Seen live: the bot
+        # asked exactly this and a bare "Ok" was accepted as a full answer
+        # because posture was misread as AWAITING_CONFIRMATION.
+        self.assertEqual(
+            infer_agent_posture(
+                "क्या आप बताना चाहेंगे कि आप किस city से travel करेंगे, "
+                "आपका departure city क्या है?"
+            ),
+            AgentPosture.AWAITING_ANSWER,
+        )
+
+    def test_non_answer_for_current_posture_covers_information_questions(self):
+        guard = InterruptionGuard(object())
+        guard.state.posture = AgentPosture.AWAITING_ANSWER
+        self.assertTrue(guard.is_non_answer_for_current_posture("ok"))
+        self.assertTrue(guard.is_non_answer_for_current_posture("understood"))
+        self.assertFalse(guard.is_non_answer_for_current_posture("Mumbai"))
+
+    def test_non_answer_for_current_posture_excludes_confirmation(self):
+        guard = InterruptionGuard(object())
+        guard.state.posture = AgentPosture.AWAITING_CONFIRMATION
+        self.assertFalse(guard.is_non_answer_for_current_posture("ok"))
+
     def test_transcript_starts_clock_when_user_state_event_is_missing(self):
         guard = InterruptionGuard(object())
         guard.state.agent_speaking = True
@@ -175,18 +248,18 @@ class InterruptionPolicyTests(unittest.TestCase):
 
     def test_stable_multiword_partial_takes_turn(self):
         self.assertEqual(
-            self.decide("actually no", final=False, duration=0.60),
+            self.decide("actually no", final=False, duration=0.20),
             InterruptDecision.INTERRUPT,
         )
 
     def test_interim_replies_use_posture_thresholds(self):
         cases = (
-            (AgentPosture.EXPLAINING, "actually no", 0.59, InterruptDecision.WAIT),
-            (AgentPosture.EXPLAINING, "actually no", 0.60, InterruptDecision.INTERRUPT),
-            (AgentPosture.AWAITING_ANSWER, "four adults", 0.49, InterruptDecision.WAIT),
-            (AgentPosture.AWAITING_ANSWER, "four adults", 0.50, InterruptDecision.INTERRUPT),
-            (AgentPosture.AWAITING_CONFIRMATION, "yeah sure", 0.34, InterruptDecision.WAIT),
-            (AgentPosture.AWAITING_CONFIRMATION, "yeah sure", 0.35, InterruptDecision.INTERRUPT),
+            (AgentPosture.EXPLAINING, "actually no", 0.19, InterruptDecision.WAIT),
+            (AgentPosture.EXPLAINING, "actually no", 0.20, InterruptDecision.INTERRUPT),
+            (AgentPosture.AWAITING_ANSWER, "four adults", 0.09, InterruptDecision.WAIT),
+            (AgentPosture.AWAITING_ANSWER, "four adults", 0.10, InterruptDecision.INTERRUPT),
+            (AgentPosture.AWAITING_CONFIRMATION, "yeah sure", 0.09, InterruptDecision.WAIT),
+            (AgentPosture.AWAITING_CONFIRMATION, "yeah sure", 0.10, InterruptDecision.INTERRUPT),
         )
         for posture, text, duration, expected in cases:
             with self.subTest(posture=posture, duration=duration):

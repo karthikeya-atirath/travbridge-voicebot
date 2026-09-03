@@ -38,7 +38,7 @@ from app_logger import applog
 _TUNER_BACKCHANNELS = frozenset({
     "hm", "hmm", "hmmm", "mm", "mmm", "uh", "um", "uh huh", "uh-huh",
     "mm hmm", "mm-hmm", "ok", "okay", "yeah", "yes", "right", "alright",
-    "i see", "got it", "haan", "han", "हम्म", "हां", "हाँ", "ठीक है",
+    "understood", "i see", "got it", "haan", "han", "हम्म", "हां", "हाँ", "ठीक है",
 })
 
 
@@ -53,19 +53,19 @@ CATEGORY_CONFIGS = {
         "stt": {"endpointing_ms": 125, "interim_results": True, "no_delay": True},
     },
     "slow_steady": {
-        "endpointing": {"min_delay": 0.45},
+        "endpointing": {"min_delay": 0.25},
         "tts": {"pace": 0.90},
-        "stt": {"endpointing_ms": 400, "interim_results": False, "no_delay": False},
+        "stt": {"endpointing_ms": 200, "interim_results": True, "no_delay": True},
     },
     "micro_pauses": {
-        "endpointing": {"min_delay": 0.50},
+        "endpointing": {"min_delay": 0.30},
         "tts": {"pace": 0.925},
-        "stt": {"endpointing_ms": 500, "interim_results": True, "no_delay": False},
+        "stt": {"endpointing_ms": 200, "interim_results": True, "no_delay": True},
     },
     "hesitant": {
-        "endpointing": {"min_delay": 0.60},
+        "endpointing": {"min_delay": 0.40},
         "tts": {"pace": 0.875},
-        "stt": {"endpointing_ms": 500, "interim_results": True, "no_delay": False},
+        "stt": {"endpointing_ms": 250, "interim_results": True, "no_delay": True},
     },
     "interruption_heavy": {
         "endpointing": {"min_delay": 0.175},
