@@ -45,8 +45,15 @@ class InterruptDecision(str, Enum):
 
 
 # Seconds of stable interim speech required before an unfinalized transcript
-# is trusted enough to cut the agent off. A final transcript always cuts in
-# immediately regardless of this value — these only gate the interim path.
+# is trusted enough to cut the agent off. These only gate the interim
+# *stability window* while explaining — the two-word floor they're built on
+# top of also applies to a final transcript there (see classify_interruption):
+# Deepgram's is_final marks a settled chunk (gated by endpointing_ms, as low
+# as 75-250ms of silence), not a settled utterance, so it fires on an
+# ordinary mid-sentence breathing pause just as readily as at a real end of
+# turn. AWAITING_ANSWER/CONFIRMATION/CLARIFICATION are unaffected: a final
+# there is trusted below the floor already (a one-word "yes"/"haan" answers
+# a yes/no question outright), and that's correct today, not the bug.
 # Ordered by how much benefit of the doubt each posture owes the agent:
 # explanations are the least urgent to interrupt (losing mid-explanation
 # content costs the most), confirmations the most urgent (the agent is
@@ -360,6 +367,7 @@ class GuardState:
     user_speech_started_at: float | None = None
     interrupt_fired: bool = False
     last_transcript_event: tuple[str, bool] | None = None
+    last_decision: InterruptDecision | None = None
     transcript_evolution: list[str] = field(default_factory=list)
 
 
@@ -417,10 +425,18 @@ def classify_interruption(
     if _all_tokens_are_acknowledgements(text):
         return InterruptDecision.IGNORE, "explanation_acknowledgement"
 
-    # Final non-fillers are intentional enough to take the turn. Interim
-    # multi-word speech gets a short stability window before interrupting.
+    # A final chunk is only as trustworthy as its word count says it is —
+    # Deepgram can and does emit is_final=True mid-utterance on nothing more
+    # than a micro-pause (see the note above EXPLANATION_INTERRUPT_THRESHOLD).
+    # A single stray word from a chunk cut short by a breathing pause gets
+    # the same benefit of the doubt as an interim one; nothing here discards
+    # it — LiveKit's own end-of-turn detection still delivers the full
+    # utterance once the user's turn genuinely ends. Multi-word finals are
+    # exactly as immediate as before: this only changes the single-word case.
     if is_final:
-        return InterruptDecision.INTERRUPT, "final_meaningful_speech"
+        if count >= 2:
+            return InterruptDecision.INTERRUPT, "final_meaningful_speech"
+        return InterruptDecision.WAIT, "single_word_final_fragment"
     if count >= 2 and speech_duration >= EXPLANATION_INTERRUPT_THRESHOLD:
         return InterruptDecision.INTERRUPT, "stable_multiword_speech"
     return InterruptDecision.WAIT, "collecting_transcript"
@@ -472,25 +488,32 @@ class InterruptionGuard:
         )
 
     def is_redundant_turn(self, text: str) -> bool:
-        """True when turn evolution's most recent overlap verdict for this
-        exact text was REDUNDANT — i.e. classify_interruption saw
-        meaningful, non-filler content, but comparing it against the
-        active committed turn showed it adds nothing new (a restatement,
-        a subset of already-given information, an exact repeat...).
+        """True when this finalized transcript adds nothing over the active
+        committed user turn — a restatement, a subset of already-given
+        information, an exact repeat (e.g. the caller says "Hyderabad"
+        again after the agent already acknowledged it and moved on to
+        asking for travel dates).
 
-        That REDUNDANT verdict already stops classify_interruption's
-        candidate INTERRUPT from cutting off TTS (see the decision
-        downgrade in on_user_input_transcribed), but by itself it does
-        nothing about the second half of the problem: the same finalized
-        transcript is still handed to the LLM as the next turn once the
-        agent stops talking, producing a reply to content the agent
-        already addressed. This is meant to be checked from
-        Agent.on_user_turn_completed to veto that generation too.
+        Classifies directly against turn_analyzer.active_turn via
+        classify_final_turn(), independent of whether this transcript ever
+        overlapped agent playback: on_user_input_transcribed's overlap
+        analysis only runs while the agent is speaking, so relying on its
+        last_analysis here left the common, non-overlapping case (user
+        replies after the agent has gone quiet) with no redundancy check
+        at all — the same repeated slot value kept reaching the LLM as a
+        "new" turn and getting a fresh reply every time.
+
+        Meant to be checked from Agent.on_user_turn_completed to veto that
+        generation before it happens.
         """
-        analysis = self.turn_analyzer.last_analysis
-        if analysis is None or analysis.delta is not TurnDelta.REDUNDANT:
-            return False
-        return self.turn_analyzer.candidate_normalized == normalize_text(text)
+        analysis = self.turn_analyzer.classify_final_turn(
+            text,
+            expects_short_answer=self.state.posture in {
+                AgentPosture.AWAITING_CONFIRMATION,
+                AgentPosture.AWAITING_CLARIFICATION,
+            },
+        )
+        return analysis.delta is TurnDelta.REDUNDANT
 
     def set_assistant_text(self, text: str, *, source: str) -> None:
         if not text.strip():
@@ -555,7 +578,22 @@ class InterruptionGuard:
             return
         is_final = bool(getattr(event, "is_final", False))
         event_key = (text, is_final)
-        if event_key == self.state.last_transcript_event:
+        # A duplicate of the exact last event is only safe to skip once it
+        # has already been acted on (INTERRUPT/IGNORE are terminal for a
+        # given transcript). A prior WAIT verdict is provisional and purely
+        # time-dependent (see QUESTION_INTERRUPT_THRESHOLD etc.) — if the
+        # STT layer keeps re-emitting the identical stable interim while
+        # still short of that stability window, unconditionally dropping
+        # every repeat here froze `speech_duration` at whatever it was on
+        # the first occurrence, so the duration-based promotion to
+        # INTERRUPT could then only ever fire once is_final finally
+        # arrived — silently adding however long the provider takes to
+        # finalize on top of the window that was supposed to bound the
+        # wait.
+        if (
+            event_key == self.state.last_transcript_event
+            and self.state.last_decision is not InterruptDecision.WAIT
+        ):
             return
 
         self.state.last_transcript_event = event_key
@@ -592,7 +630,7 @@ class InterruptionGuard:
         #     ("stop", "wait", ...), not content to compare for overlap —
         #     one coinciding with a keyword already in the active turn
         #     must not suppress it.
-        #   - Answer/confirmation/clarification postures: classify_interruption
+        #   - Confirmation/clarification postures: classify_interruption
         #     treats a final reply here as meaningful without an ambiguous-
         #     acknowledgement gate, since a short "yes"/"haan" IS a
         #     complete answer to a yes/no question, not filler — and for
@@ -600,13 +638,20 @@ class InterruptionGuard:
         #     against is usually the very thing the agent just asked the
         #     user to repeat, so an exact repeat is the *expected* answer,
         #     not noise to suppress.
+        #
+        #   AWAITING_ANSWER is deliberately NOT in this exempt set (unlike
+        #   the other two): an open WH-question expects real new content,
+        #   so a reply that's just a repeated/subset restatement of the
+        #   active turn (e.g. the caller re-saying "Hyderabad" as their
+        #   "answer" to "when are you traveling?") must still be measured
+        #   against it and caught as REDUNDANT — that's exactly the
+        #   content this comparison exists to catch, not a case to skip.
         turn_delta: TurnDelta | None = None
         if decision is InterruptDecision.INTERRUPT and reason != "explicit_command":
             analysis = self.turn_analyzer.classify_overlap(
                 raw_text,
                 is_final=is_final,
                 expects_short_answer=self.state.posture in {
-                    AgentPosture.AWAITING_ANSWER,
                     AgentPosture.AWAITING_CONFIRMATION,
                     AgentPosture.AWAITING_CLARIFICATION,
                 },
@@ -626,6 +671,8 @@ class InterruptionGuard:
                 # so analysis.reason carries the actual diagnostic detail
                 # (e.g. "new_information", "expected_answer").
                 reason = f"{reason}+{analysis.reason}"
+
+        self.state.last_decision = decision
 
         applog.info(
             f"[INTERRUPT GUARD][{self.session_label}] posture={self.state.posture.value} "
@@ -666,6 +713,7 @@ class InterruptionGuard:
         """
         self.state.user_speech_started_at = None
         self.state.last_transcript_event = None
+        self.state.last_decision = None
         self.state.transcript_evolution.clear()
 
     def _reset_overlap(self) -> None:

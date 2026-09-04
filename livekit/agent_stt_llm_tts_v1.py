@@ -39,18 +39,6 @@ from app_logger import applog
 from google_tools import get_destination_info, get_destination_food, get_destination_weather, get_destination_sightseeing, get_destination_activities, get_destination_visa_info, get_destination_hotels, recommend_destinations, get_destination_flights, create_custom_itinerary, update_custom_itinerary
 
 
-# Spoken automatically while the agent is in the "thinking" state (LLM/tool
-# round trip) for longer than THINKING_FILLER_DELAY, instead of relying on
-# the prompt to remember to say one — the prompt can't guarantee it fires,
-# this can. Below the delay, a round trip is fast enough that playing one
-# would add more perceived latency (waiting for it to finish) than it masks.
-THINKING_FILLERS = [
-    "Hold on just a second, let me check that for you…",
-    "Let me look up the latest details…",
-    "Give me one moment please…",
-]
-THINKING_FILLER_DELAY = 0.7
-
 # Messages used for re-engaging the user during long silence
 REPROMPT_MESSAGES = [
     "Are you still there? I'm happy to continue helping with your travel plans...",
@@ -180,6 +168,16 @@ async def my_agent(ctx: agents.JobContext):
     )
     session = AgentSession(
         stt=deepgram.STT(
+            # Pinned to nova-2 (the free tier on this account) rather than
+            # nova-3. Tradeoff worth knowing about: Deepgram's own docs are
+            # explicit that real-time code-switching between Hindi and
+            # English is a nova-3 capability — nova-2 in fixed-language mode
+            # has no code-switch handling, so an English word/name/number
+            # embedded in a Hindi sentence ("mujhe Delhi se Mumbai jaana
+            # hai") can still be mis-transcribed. There's no free-tier
+            # workaround for that on nova-2; language="hi" is still the
+            # right setting for it (language="multi" is a nova-3 feature,
+            # not confirmed to do real code-switching on nova-2).
             model="nova-2",
             language="hi",
             endpointing_ms=_default_profile["stt"]["endpointing_ms"],
@@ -219,6 +217,30 @@ async def my_agent(ctx: agents.JobContext):
                 "resume_false_interruption": False,
             },
             preemptive_generation={
+                # LLM-level preemptive generation stays on (the "enabled" key
+                # defaults True and is left alone): the LLM speculatively
+                # drafts a reply from a stable interim transcript, and is
+                # only ever used if the eventual final transcript, chat
+                # context, tools, and tool_choice all still match — so it's
+                # a free latency win with no correctness risk, and it never
+                # bypasses Assistant.on_user_turn_completed's redundant/
+                # filler-turn veto (that hook still runs on the real final
+                # turn regardless of a pending preemptive guess).
+                #
+                # preemptive_tts stays False on purpose, though: turning it
+                # on starts synthesizing *and playing* audio from that same
+                # unconfirmed guess, before end-of-turn is confirmed. If the
+                # guess is later invalidated (the user kept talking through
+                # what looked like a pause), the bot has already started
+                # speaking and has to abort mid-word — an audible false
+                # start, not just a quieter missed interruption. That risk
+                # lands squarely on Hindi/Hinglish: verb-final word order
+                # and clause-final negation/particles ("... nahi, Mumbai")
+                # mean an early partial transcript is far more likely to
+                # reverse or complete its meaning at the very end than an
+                # English SVO sentence is. Given micro-pause mishandling is
+                # the primary complaint, preemptive_tts=True would add a new,
+                # more visible version of the same failure mode.
                 "preemptive_tts": False,
             },
         ),
@@ -332,31 +354,6 @@ async def my_agent(ctx: agents.JobContext):
             is_agent_speaking = True
         elif new in ("idle", "listening", "thinking"):
             is_agent_speaking = False
-
-    thinking_filler_task: asyncio.Task | None = None
-
-    async def _speak_thinking_filler():
-        try:
-            await asyncio.sleep(THINKING_FILLER_DELAY)
-            # add_to_chat_ctx=False: keeps this out of conversation_item_added
-            # entirely, so it can never overwrite InterruptionGuard's posture
-            # (which only reacts to real assistant replies) with a throwaway
-            # filler line.
-            await session.say(
-                random.choice(THINKING_FILLERS),
-                allow_interruptions=True,
-                add_to_chat_ctx=False,
-            )
-        except asyncio.CancelledError:
-            pass
-
-    @session.on("agent_state_changed")
-    def on_thinking_filler_state(event):
-        nonlocal thinking_filler_task
-        if thinking_filler_task is not None and not thinking_filler_task.done():
-            thinking_filler_task.cancel()
-        if getattr(event, "new_state", None) == "thinking":
-            thinking_filler_task = asyncio.create_task(_speak_thinking_filler())
 
     @session.on("user_state_changed")
     def on_user_state_changed(event):

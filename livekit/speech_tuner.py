@@ -1,20 +1,35 @@
-"""Per-speech-type STT/TTS/endpointing parameter table + single apply dispatcher.
+"""Per-speech-type STT/TTS parameter table + single apply dispatcher.
 
 Values below are the exact fast_aggressive / slow_steady / micro_pauses /
 hesitant / interruption_heavy figures supplied for this project (midpoint
-picked wherever the source gave a range), split across four groups by what
-each one actually controls in this stack:
+picked wherever the source gave a range), split across groups by what each
+one actually controls in this stack:
 
-- endpointing: LiveKit's own turn-taking wait time. Applied live via
-  ``AgentSession.update_options(endpointing_opts=...)`` (a documented,
-  reconnect-free call — only the given keys change, the rest of the
-  session's endpointing config is left alone).
+- endpointing: LiveKit's own turn-taking wait time. Present in
+  CATEGORY_CONFIGS only to seed AgentSession's initial min_delay at
+  session construction (agent_stt_llm_tts_v1.py) — apply_category() does
+  NOT re-push it. The session is built with endpointing mode="dynamic"
+  (livekit.agents.voice.endpointing.DynamicEndpointing), which continuously
+  learns a per-caller pause floor from real pause behavior via an
+  exponential moving average, and specifically raises that floor when it
+  observes a pause immediately followed by an interruption — exactly the
+  micro-pause/false-EOT pattern these categories are named for.
+  DynamicEndpointing.update_options() re-seeds that EMA from scratch, so
+  calling AgentSession.update_options(endpointing_opts=...) on every 5-turn
+  reclassification would throw away real, continuously-learned per-caller
+  signal in favor of a coarser static guess every time the tuner rechecks —
+  fighting the exact mechanism meant to solve the micro-pause case. STT/TTS
+  have no equivalent self-adjusting mechanism, so those stay under this
+  tuner's live control.
 - interruption settings are intentionally not tuned here. The interruption
   guard is their single owner, so native VAD cannot race semantic filler handling.
 - tts: Sarvam's speaking pace, applied via ``TTS.update_options()``.
-- stt: Deepgram nova-2 knobs. NOTE the source table's ``utterance_end_ms``
-  has no equivalent on this plugin's nova-2 wrapper (livekit-plugins-deepgram
-  1.5.13) — it only exists on Deepgram's newer Flux model (``deepgram.STTv2``),
+- stt: Deepgram nova-2 knobs, pinned to nova-2 rather than nova-3 to stay on
+  the account's free tier (see agent_stt_llm_tts_v1.py — this means no
+  real-time Hindi/English code-switching support, a nova-3-only feature).
+  NOTE the source table's ``utterance_end_ms`` has no equivalent on this
+  LiveKit plugin wrapper (livekit-plugins-deepgram 1.5.13) for any Deepgram
+  model — it only exists on Deepgram's newer Flux model (``deepgram.STTv2``),
   which this project isn't using, so it's intentionally left out rather than
   guessed at.
 
@@ -83,10 +98,15 @@ CLASSIFIER_PROFILE_MAP: dict[str, str] = {
 
 
 def apply_category(session: AgentSession, category: str) -> None:
-    """Push a category's endpointing/STT/TTS params into the live session."""
+    """Push a category's STT/TTS params into the live session.
+
+    Deliberately does not touch endpointing_opts — see the module docstring:
+    that would reset AgentSession's DynamicEndpointing EMA on every
+    reclassification, discarding the per-caller pause floor it has been
+    continuously learning since session start.
+    """
     profile = CLASSIFIER_PROFILE_MAP.get(category, category)
     config = CATEGORY_CONFIGS[profile]
-    session.update_options(endpointing_opts=config["endpointing"])
     if session.stt is not None:
         session.stt.update_options(**config["stt"])
     if session.tts is not None:
@@ -204,8 +224,8 @@ def attach_speech_tuner(
                 config = CATEGORY_CONFIGS.get(profile)
                 if applied and config:
                     outcome = (
-                        f"APPLIED -> endpointing={config['endpointing']}, "
-                        f"stt={config['stt']}, tts={config['tts']}"
+                        f"APPLIED -> stt={config['stt']}, tts={config['tts']} "
+                        f"(endpointing left to DynamicEndpointing's own learning)"
                     )
                 elif error is not None:
                     outcome = f"FAILED TO APPLY -> {error}"

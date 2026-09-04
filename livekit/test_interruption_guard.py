@@ -244,7 +244,15 @@ class InterruptionPolicyTests(unittest.TestCase):
         self.assertEqual(self.decide("actually", final=False, duration=0.2), InterruptDecision.WAIT)
 
     def test_final_non_filler_takes_turn(self):
-        self.assertEqual(self.decide("visa"), InterruptDecision.INTERRUPT)
+        self.assertEqual(self.decide("need visa"), InterruptDecision.INTERRUPT)
+
+    def test_single_word_final_waits_during_explanation(self):
+        # Deepgram's is_final marks a settled chunk (gated by endpointing_ms,
+        # as low as 75-250ms of silence), not a settled utterance — it can
+        # fire mid-sentence on an ordinary breathing pause. A lone word from
+        # such a chunk gets the same two-word floor as an interim one instead
+        # of cutting the agent off outright.
+        self.assertEqual(self.decide("visa"), InterruptDecision.WAIT)
 
     def test_stable_multiword_partial_takes_turn(self):
         self.assertEqual(

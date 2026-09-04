@@ -153,6 +153,20 @@ STOPWORDS = frozenset({
     # nothing else in the utterance carried real content.
     "yaar", "यार",
     "madam", "मैडम", "sir", "जी",
+
+    # Hesitation fillers glued onto a repeated slot value the same way
+    # ("yahan Hyderabad" / "यहां हैदराबाद" = "here, Hyderabad"; "ya
+    # Hyderabad" / "या हैदराबाद" = "or, Hyderabad" as a hedge before
+    # restating, not a real second option) — observed letting a caller's
+    # third restatement of an already-answered city slot read as new
+    # information and get a fresh LLM reply instead of being recognized as
+    # the same answer again. "ya"/"या" is also CHOICE_CONJUNCTION_PATTERN's
+    # real "or" in a genuine two-value choice ("Mumbai ya Hyderabad"), but
+    # that case still has a second content token of its own surviving the
+    # filter, so it isn't reduced to a bare subsequence of the active turn
+    # and won't misclassify as REDUNDANT.
+    "yahan", "yahaan", "यहां", "यहाँ",
+    "ya", "या",
 })
 
 
@@ -397,29 +411,55 @@ class TurnEvolutionAnalyzer:
         is_final: bool,
         expects_short_answer: bool = False,
     ) -> TurnAnalysis:
-        analysis = self._classify_overlap(
-            transcript, is_final=is_final, expects_short_answer=expects_short_answer
+        raw = transcript.strip()
+        # Save latest STT candidate only.
+        #
+        # DO NOT modify active_turn here.
+        self.candidate_text = raw
+        self.candidate_normalized = normalize_text(raw)
+
+        analysis = self._classify_against_active(
+            raw, expects_short_answer=expects_short_answer
         )
         self.last_analysis = analysis
         return analysis
 
-    def _classify_overlap(
+    def classify_final_turn(
         self,
         transcript: str,
         *,
-        is_final: bool,
+        expects_short_answer: bool = False,
+    ) -> TurnAnalysis:
+        """Classify a *finalized* user turn against the active committed
+        turn, independent of the live barge-in overlap tracking above.
+
+        classify_overlap() (and the last_analysis it records) only ever
+        runs while the agent is speaking — on_user_input_transcribed short-
+        circuits otherwise. That leaves the ordinary, non-overlapping case
+        (the user replies after the agent has already gone quiet, which is
+        most turns) with no redundancy check at all: a restatement of an
+        already-answered slot ("Hyderabad" again, after the agent moved on
+        to asking for travel dates) sailed straight through to the LLM
+        because there was never any classify_overlap() call to have set
+        last_analysis for it. Call this instead from wherever a finalized
+        transcript is about to become the next LLM turn, regardless of
+        whether it overlapped playback. No side effects on candidate_text/
+        last_analysis — those belong solely to the overlap-commit workflow.
+        """
+        return self._classify_against_active(
+            transcript, expects_short_answer=expects_short_answer
+        )
+
+    def _classify_against_active(
+        self,
+        transcript: str,
+        *,
         expects_short_answer: bool = False,
     ) -> TurnAnalysis:
 
         raw = transcript.strip()
 
         incoming = normalize_text(raw)
-
-        # Save latest STT candidate only.
-        #
-        # DO NOT modify active_turn here.
-        self.candidate_text = raw
-        self.candidate_normalized = incoming
 
         # EMPTY -> REDUNDANT
         if not incoming:
@@ -442,8 +482,13 @@ class TurnEvolutionAnalyzer:
         # EXPECTED SHORT ANSWER -> INTERRUPT
         #
         # A generic "yeah"/"haan" IS a complete answer when the agent just
-        # asked a yes/no question — it isn't a restatement of anything, so
-        # it must never be measured against the active turn at all.
+        # asked a yes/no confirmation, or when it's the literal repeat the
+        # agent asked for during clarification — neither is a restatement
+        # of anything, so it must never be measured against the active
+        # turn at all. Callers only set this for AWAITING_CONFIRMATION/
+        # AWAITING_CLARIFICATION, not AWAITING_ANSWER: an open question
+        # expects real content, and a bare restatement of an already-given
+        # slot genuinely adds nothing there — see is_subsequence below.
         if expects_short_answer:
 
             return TurnAnalysis(
