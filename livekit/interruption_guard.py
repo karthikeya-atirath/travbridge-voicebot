@@ -9,6 +9,7 @@ likely to stop playback.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ from turn_evolution import (
     SORTED_ACKNOWLEDGEMENT_PHRASES,
     TurnDelta,
     TurnEvolutionAnalyzer,
+    extract_keyword_tokens,
     normalize_text,
 )
 
@@ -49,22 +51,24 @@ class InterruptDecision(str, Enum):
 # *stability window* while explaining — the two-word floor they're built on
 # top of also applies to a final transcript there (see classify_interruption):
 # Deepgram's is_final marks a settled chunk (gated by endpointing_ms, as low
-# as 75-250ms of silence), not a settled utterance, so it fires on an
-# ordinary mid-sentence breathing pause just as readily as at a real end of
-# turn. AWAITING_ANSWER/CONFIRMATION/CLARIFICATION are unaffected: a final
-# there is trusted below the floor already (a one-word "yes"/"haan" answers
-# a yes/no question outright), and that's correct today, not the bug.
+# as 200-250ms of silence, see speech_tuner.CATEGORY_CONFIGS), not a settled
+# utterance, so it fires on an ordinary mid-sentence breathing pause just as
+# readily as at a real end of turn.
 # Ordered by how much benefit of the doubt each posture owes the agent:
 # explanations are the least urgent to interrupt (losing mid-explanation
 # content costs the most), confirmations the most urgent (the agent is
-# actively blocked on a short yes/no). Tuned down from 0.60/0.50/0.35s to
-# claw back latency against the pipeline's own ~1s delay — at these values
-# the window is barely above the two-word floor already required, so it is
-# no longer much of a guard against a false-start/mis-hear self-correcting;
-# see the dry-run note in the commit for the actual tradeoff this buys.
-EXPLANATION_INTERRUPT_THRESHOLD: Final[float] = 0.20
-QUESTION_INTERRUPT_THRESHOLD: Final[float] = 0.10
-CONFIRMATION_INTERRUPT_THRESHOLD: Final[float] = 0.10
+# actively blocked on a short yes/no). Raised back up from 0.20/0.10/0.10s:
+# those values sat barely above the two-word floor already required, so an
+# ordinary false-start or STT mis-hear had almost no window to self-correct
+# before triggering a cutoff, producing frequent false interruptions on
+# ordinary breathing pauses and TTS-bleed fragments. These values trade a
+# small amount of extra barge-in latency for materially fewer false
+# interruptions; is_final trust for AWAITING_ANSWER/AWAITING_CONFIRMATION is
+# additionally gated by _is_meaningful_final_reply below rather than
+# accepted unconditionally.
+EXPLANATION_INTERRUPT_THRESHOLD: Final[float] = 0.60
+QUESTION_INTERRUPT_THRESHOLD: Final[float] = 0.40
+CONFIRMATION_INTERRUPT_THRESHOLD: Final[float] = 0.30
 
 
 IMMEDIATE_COMMANDS: Final[frozenset[str]] = frozenset(
@@ -89,6 +93,59 @@ def _strip_command_prefix_fillers(text: str) -> str:
     while tokens and tokens[0] in COMMAND_PREFIX_FILLERS:
         tokens = tokens[1:]
     return " ".join(tokens)
+
+
+# Negative replies answer a yes/no question just as completely as an
+# acknowledgement does, but must stay out of turn_evolution's
+# ACKNOWLEDGEMENTS/STOPWORDS lists: those are stripped before comparing
+# turns for redundancy, and stripping "no"/"nahi" there would break a
+# correction like "no, Mumbai" (its whole point is contrasting with what
+# was already said — see is_subsequence's docstring example). Kept local to
+# this module's own meaningful-final-reply check instead.
+NEGATION_TOKENS: Final[frozenset[str]] = frozenset(
+    {"no", "nope", "nah", "not", "nahi", "nahin", "naa", "नहीं", "ना"}
+)
+
+
+def _is_meaningful_final_reply(text: str, *, ambiguous_acknowledgement: bool) -> bool:
+    """Gate for trusting a finalized transcript enough to force an
+    interruption in AWAITING_CONFIRMATION/AWAITING_ANSWER.
+
+    is_final only means Deepgram's endpointing timer fired on a settled
+    chunk — not that the words are a real reply (see the note above
+    EXPLANATION_INTERRUPT_THRESHOLD). Trusting every is_final unconditionally
+    let a stray single-word STT fragment (background noise, a clipped
+    syllable, a TTS-echo fragment that slipped past _looks_like_tts_echo)
+    cut the agent off just because it happened to arrive marked final. A
+    recognized yes/no acknowledgement, an explicit negation, or any real
+    (non-stopword, non-acknowledgement) content token are each independently
+    sufficient signal; anything else should wait for more speech instead.
+    """
+    if ambiguous_acknowledgement:
+        return True
+    if any(token in NEGATION_TOKENS for token in text.split()):
+        return True
+    return bool(extract_keyword_tokens(text))
+
+
+def _looks_like_tts_echo(transcript_normalized: str, assistant_text_normalized: str) -> bool:
+    """True when the heard phrase is very likely the bot's own voice
+    leaking back into the mic (speaker bleed / line echo) rather than real
+    user speech: a multi-word chunk that appears verbatim inside the
+    sentence the bot is currently speaking.
+
+    Restricted to matches of 2+ words on purpose: a single shared word
+    (e.g. the caller answering "Mumbai" right after the bot said "...to
+    Mumbai?") is exactly the kind of real short answer this must not
+    swallow — genuine echo reproduces a run of consecutive words, not one
+    coincidentally-shared token.
+    """
+    if not transcript_normalized or not assistant_text_normalized:
+        return False
+    if word_count(transcript_normalized) < 2:
+        return False
+    return transcript_normalized in assistant_text_normalized
+
 
 @dataclass(frozen=True, slots=True)
 class PostureResult:
@@ -159,6 +216,22 @@ INFORMATION_REQUEST_PATTERNS = (
         r")(?=\s|\Z)",
         re.IGNORECASE,
     ),
+)
+
+# "Do you have <slot> in mind?" is this bot's standard phrasing for eliciting
+# a slot value (see prompts.py's own example: "Perfect. Do you have travel
+# dates in mind?") — grammatically a yes/no shell, but the only useful reply
+# is the value itself, not a bare "yes". Left unhandled, "do you have" alone
+# satisfies CONFIRMATION_QUESTION_PATTERN below and the posture becomes
+# AWAITING_CONFIRMATION, where (unlike AWAITING_ANSWER) a bare acknowledgement
+# is treated as a complete, meaningful answer instead of being ignored as
+# filler — so a filler "acha"/"ok" caught mid-thought gets promoted straight
+# to an interruption and handed to the LLM as if it were the actual answer.
+# Must be checked before the confirmation patterns for the same reason
+# INFORMATION_REQUEST_PATTERNS is.
+INFORMATION_IN_MIND_PATTERN = re.compile(
+    r"\b(?:have|has|had)\b.{0,80}?\bin mind\b",
+    re.IGNORECASE,
 )
 
 # Same WH-word list as INFORMATION_START_PATTERN/HINDI_INFORMATION_PATTERN,
@@ -323,6 +396,9 @@ def classify_assistant_sentence(sentence: str) -> PostureResult:
     if explicit_question and QUESTION_WORD_ANYWHERE_PATTERN.search(text):
         return PostureResult(AgentPosture.AWAITING_ANSWER, "wh_word_anywhere")
 
+    if INFORMATION_IN_MIND_PATTERN.search(text):
+        return PostureResult(AgentPosture.AWAITING_ANSWER, "in_mind_information_question")
+
     if HINDI_CONFIRMATION_PATTERN.search(text):
         return PostureResult(AgentPosture.AWAITING_CONFIRMATION, "hindi_confirmation_question")
 
@@ -364,11 +440,48 @@ def infer_agent_posture(text: str) -> AgentPosture:
 class GuardState:
     posture: AgentPosture = AgentPosture.EXPLAINING
     agent_speaking: bool = False
+    # True for the whole span of a turn's SpeechHandle — "thinking" (LLM +
+    # tool calls, before any audio) through "speaking" — as opposed to
+    # agent_speaking, which is only true once audio playback starts. A new
+    # user turn that arrives while the previous one is still "thinking" has
+    # nowhere to go without this: interruption.enabled=False means nothing
+    # else in the pipeline cancels that in-flight generation, so it runs to
+    # completion in parallel with the new turn and both get spoken back to
+    # back (see on_user_input_transcribed).
+    agent_active: bool = False
     user_speech_started_at: float | None = None
     interrupt_fired: bool = False
+    # True from the moment the user starts speaking while agent_active,
+    # through the next _reset_overlap() (agent goes idle/listening, or the
+    # user goes "away"). Marks whether the transcript currently being
+    # assembled ever actually talked over the agent's own current turn, as
+    # opposed to arriving cleanly after the agent had already finished and
+    # moved on. is_redundant_turn() uses this to decide whether comparing
+    # against active_turn even makes sense for this turn — see its
+    # docstring.
+    turn_overlapped_agent: bool = False
+    # Exact text of the most recent *final* transcript that classify_overlap
+    # judged REDUNDANT against the active turn, kept only until the next
+    # final classification (redundant or not) overwrites/clears it.
+    #
+    # Needed because the "away" user-state transition that follows a final
+    # transcript almost immediately (well before LiveKit's own dropped-turn
+    # warning reaches recover_dropped_turn) calls _reset_overlap(), which
+    # flips turn_overlapped_agent back to False. is_redundant_turn() then
+    # sees "no overlap" and skips the real comparison for the very text it
+    # already classified as an exact repeat moments earlier — this snapshot
+    # lets it recognize that specific case instead of silently reversing
+    # its own verdict. See is_redundant_turn() and recover_dropped_turn().
+    last_final_redundant_text: str | None = None
     last_transcript_event: tuple[str, bool] | None = None
     last_decision: InterruptDecision | None = None
     transcript_evolution: list[str] = field(default_factory=list)
+    # Normalized text of the sentence/clause the agent is currently
+    # speaking, refreshed by set_assistant_text. Compared against incoming
+    # transcripts in classify_interruption to catch TTS speaker-bleed
+    # before it's treated as a real barge-in.
+    assistant_text_normalized: str = ""
+    confirmation_has_explanatory_prefix: bool = False
 
 
 def classify_interruption(
@@ -377,12 +490,16 @@ def classify_interruption(
     is_final: bool,
     posture: AgentPosture,
     speech_duration: float,
+    assistant_text_normalized: str = "",
+    confirmation_has_explanatory_prefix: bool = False,
 ) -> tuple[InterruptDecision, str]:
     """Pure decision function, separated from LiveKit event side effects."""
     text = normalize_text(transcript)
     count = word_count(text)
     if not text:
         return InterruptDecision.WAIT, "empty_transcript"
+    if _looks_like_tts_echo(text, assistant_text_normalized):
+        return InterruptDecision.IGNORE, "tts_echo"
     if text in IMMEDIATE_COMMANDS or _strip_command_prefix_fillers(text) in IMMEDIATE_COMMANDS:
         return InterruptDecision.INTERRUPT, "explicit_command"
 
@@ -400,8 +517,18 @@ def classify_interruption(
     # A generic "yeah" can answer "Would you like to continue?", but cannot
     # answer "How many members?". Only confirmation questions accept it.
     if posture is AgentPosture.AWAITING_CONFIRMATION:
+        if ambiguous_acknowledgement and confirmation_has_explanatory_prefix:
+            return InterruptDecision.IGNORE, "explanation_prefix_acknowledgement"
         if is_final:
-            return InterruptDecision.INTERRUPT, "reply_to_confirmation"
+            # is_final is not, on its own, proof this is a real reply — see
+            # _is_meaningful_final_reply. A bare ack/negation still answers
+            # a yes/no question outright; anything with no recognizable
+            # signal waits for more speech instead of forcing a cutoff.
+            if _is_meaningful_final_reply(
+                text, ambiguous_acknowledgement=ambiguous_acknowledgement
+            ):
+                return InterruptDecision.INTERRUPT, "reply_to_confirmation"
+            return InterruptDecision.WAIT, "unvalidated_final_fragment"
         if count >= 2 and speech_duration >= CONFIRMATION_INTERRUPT_THRESHOLD:
             return InterruptDecision.INTERRUPT, "reply_to_confirmation"
         return InterruptDecision.WAIT, "unstable_reply_to_confirmation"
@@ -414,7 +541,12 @@ def classify_interruption(
         if ambiguous_acknowledgement:
             return InterruptDecision.IGNORE, "non_answer_to_information_question"
         if is_final:
-            return InterruptDecision.INTERRUPT, "reply_to_question"
+            # Same is_final skepticism as AWAITING_CONFIRMATION above: a
+            # stray non-content fragment (STT noise, leftover echo) must not
+            # be trusted just because it arrived marked final.
+            if _is_meaningful_final_reply(text, ambiguous_acknowledgement=False):
+                return InterruptDecision.INTERRUPT, "reply_to_question"
+            return InterruptDecision.WAIT, "unvalidated_final_fragment"
         if count >= 2 and speech_duration >= QUESTION_INTERRUPT_THRESHOLD:
             return InterruptDecision.INTERRUPT, "reply_to_question"
         return InterruptDecision.WAIT, "unstable_reply_to_question"
@@ -457,9 +589,39 @@ class InterruptionGuard:
         # genuinely new turn — gates whether a candidate interruption should
         # actually cut off playback.
         self.turn_analyzer = TurnEvolutionAnalyzer()
-        # Optional observer for evaluation/metrics (e.g. call_metrics.py).
+        # Optional observer for latency/metrics logging (e.g. turn_logger.py).
         # Never influences a decision — purely notified after the fact.
         self.on_event = on_event
+        # Additional observers (e.g. speech_tuner.py, which needs to know
+        # whether a barge-in was a *genuine* guard-confirmed interruption
+        # rather than any raw overlap) beyond the single on_event slot above.
+        self._observers: list[Callable[[str, dict], None]] = []
+        # Snapshot of the most recent is_redundant_turn() verdict (delta,
+        # reason, timing) for the per-turn latency log (turn_logger.py) to
+        # attach to its record — set as a side effect so is_redundant_turn's
+        # own bool return contract (relied on by on_user_turn_completed and
+        # the unit tests) doesn't have to change shape to carry this
+        # diagnostic data.
+        self.last_turn_evolution: dict | None = None
+        # De-dupes consecutive recover_dropped_turn() calls for the same
+        # text — see that method's docstring for why the underlying
+        # framework warning can fire more than once for one dropped turn.
+        self._last_recovered_text: str = ""
+        # True once the agent's first assistant turn has actually been
+        # committed to chat context (on_conversation_item_added fires for
+        # it) — see recover_dropped_turn's guard on this for why "no
+        # assistant turn confirmed yet" must block recovery rather than
+        # firing a second generate_reply().
+        self._assistant_has_spoken: bool = False
+
+    def add_observer(self, callback: Callable[[str, dict], None]) -> None:
+        self._observers.append(callback)
+
+    def _notify(self, kind: str, data: dict) -> None:
+        if self.on_event is not None:
+            self.on_event(kind, data)
+        for observer in self._observers:
+            observer(kind, data)
 
     def is_non_answer_for_current_posture(self, text: str) -> bool:
         """True when `text` is pure filler (ack/backchannel) while the agent's
@@ -491,21 +653,73 @@ class InterruptionGuard:
         """True when this finalized transcript adds nothing over the active
         committed user turn — a restatement, a subset of already-given
         information, an exact repeat (e.g. the caller says "Hyderabad"
-        again after the agent already acknowledged it and moved on to
-        asking for travel dates).
+        again while still mid-barge-in on the same agent turn that already
+        asked for it).
 
-        Classifies directly against turn_analyzer.active_turn via
-        classify_final_turn(), independent of whether this transcript ever
-        overlapped agent playback: on_user_input_transcribed's overlap
-        analysis only runs while the agent is speaking, so relying on its
-        last_analysis here left the common, non-overlapping case (user
-        replies after the agent has gone quiet) with no redundancy check
-        at all — the same repeated slot value kept reaching the LLM as a
-        "new" turn and getting a fresh reply every time.
+        Only ever compares when turn_overlapped_agent is set — i.e. this
+        transcript actually talked over the agent's current turn. A turn
+        that arrives cleanly after the agent already finished speaking and
+        moved on is never checked here, even if it's textually identical to
+        an earlier answer: active_turn has no notion of *which question* it
+        answered, so once the agent has asked something new, the same words
+        can legitimately be a fresh (if unhelpful) reply to that new
+        question rather than a repeat of the old one. Comparing it against
+        the old answer regardless of what was asked in between silently
+        dropped genuine replies — e.g. the caller says "मुझे क्या पता?" to
+        a new question, it happens to match their answer to the *previous*
+        question verbatim, and gets read as an exact repeat and vetoed with
+        no reply, leaving the caller hanging.
 
-        Meant to be checked from Agent.on_user_turn_completed to veto that
+        This does give up catching the old bug this function was built for
+        (an idle repeat of an already-answered slot with no new question
+        asked in between sailing through as "new") in exchange for not
+        swallowing turns like the one above — a duplicate LLM reply is a
+        smaller failure than silently dropping the user's turn.
+
+        Meant to be checked from Agent.on_user_turn_completed to veto
         generation before it happens.
         """
+        if not self.state.turn_overlapped_agent:
+            stripped = text.strip()
+            if stripped and stripped == self.state.last_final_redundant_text:
+                # The overlap this text was classified against already
+                # ended (turn_overlapped_agent reset by the "away"
+                # transition) by the time this call arrived, but it was
+                # judged an exact repeat moments ago — reuse that verdict
+                # instead of reporting "no overlap" and letting it through.
+                self.state.last_final_redundant_text = None
+                applog.info(
+                    f"[TURN EVOLUTION][{self.session_label}] finalized={text!r} "
+                    f"delta=redundant reason=stale_overlap_reset:exact_repeat "
+                    f"posture={self.state.posture.value}"
+                )
+                self.last_turn_evolution = {
+                    "ts": time.monotonic(),
+                    "finalized": text,
+                    "active": (
+                        self.turn_analyzer.active_turn.text
+                        if self.turn_analyzer.active_turn
+                        else None
+                    ),
+                    "delta": "redundant",
+                    "reason": "stale_overlap_reset:exact_repeat",
+                    "posture": self.state.posture.value,
+                }
+                return True
+            applog.info(
+                f"[TURN EVOLUTION][{self.session_label}] finalized={text!r} "
+                f"skip_reason=no_agent_overlap posture={self.state.posture.value}"
+            )
+            self.last_turn_evolution = {
+                "ts": time.monotonic(),
+                "finalized": text,
+                "active": None,
+                "delta": "skipped",
+                "reason": "no_agent_overlap",
+                "posture": self.state.posture.value,
+            }
+            return False
+
         analysis = self.turn_analyzer.classify_final_turn(
             text,
             expects_short_answer=self.state.posture in {
@@ -513,37 +727,154 @@ class InterruptionGuard:
                 AgentPosture.AWAITING_CLARIFICATION,
             },
         )
+        active = self.turn_analyzer.active_turn
+        applog.info(
+            f"[TURN EVOLUTION][{self.session_label}] finalized={text!r} "
+            f"active={active.text if active else None!r} delta={analysis.delta.value} "
+            f"reason={analysis.reason} posture={self.state.posture.value}"
+        )
+        self.last_turn_evolution = {
+            "ts": time.monotonic(),
+            "finalized": text,
+            "active": active.text if active else None,
+            "delta": analysis.delta.value,
+            "reason": analysis.reason,
+            "posture": self.state.posture.value,
+        }
         return analysis.delta is TurnDelta.REDUNDANT
+
+    def recover_dropped_turn(self, text: str) -> None:
+        """Compensate for a user turn LiveKit's own pipeline silently drops.
+
+        interruption.enabled=False (this module is the sole interruption
+        owner — see the module docstring) means every SpeechHandle is
+        created with allow_interruptions=False. When a second finalized
+        user turn arrives while the first is still generating,
+        agent_activity.py's _user_turn_completed_task checks
+        current_speech.allow_interruptions *before* ever calling
+        Agent.on_user_turn_completed or appending the message to chat
+        context — finds it False, logs "skipping reply to user input,
+        current speech generation cannot be interrupted", and returns. The
+        transcript is gone: not answered, not in history, no trace besides
+        that log line. This is exactly what a missed micro-pause produces —
+        one utterance finalizes as two back-to-back turns, and the second
+        (often the part carrying the actual new information, e.g. the
+        destination in "Yeah, I think it will be [pause] traveling from
+        Bangalore") is the one that vanishes.
+
+        This guard already independently sees every transcript via
+        on_user_input_transcribed and, for exactly this kind of new
+        content, already decides to MANUAL_INTERRUPT the current speech
+        (see _interrupt). Whether the drop above actually happens is a
+        race between that manual interrupt clearing current_speech and
+        LiveKit's own end-of-turn handling reaching its check first — so
+        the two outcomes are mutually exclusive: either the interrupt wins
+        and the turn goes through the normal path, or it loses and this
+        method is the only thing that still hands the transcript to the
+        LLM. There is no public event for the drop itself, only this log
+        line (wired up in attach_interruption_guard), so that is the
+        signal used here instead of trying to win the race directly.
+
+        Applies the same admission checks Agent.on_user_turn_completed
+        would have applied, since the framework skipped calling it.
+
+        Also refuses to recover anything until the agent's first assistant
+        turn has actually been committed to chat context
+        (_assistant_has_spoken). The opening greeting is itself spoken with
+        allow_interruptions=False and can take several seconds to finish
+        playing, and add_to_chat_ctx only commits the item once that
+        SpeechHandle completes — not once synthesis starts. A user utterance
+        landing (and getting dropped) anywhere in that window would
+        otherwise trigger a generate_reply() whose chat_ctx still has zero
+        assistant turns in it; since the system prompt instructs the LLM to
+        open with that exact greeting, the "recovered" reply is the same
+        introduction verbatim, queued right behind the original (both
+        non-interruptible) and played back to back — the caller hears
+        "Hi, I am Tacy..." twice in a row for what was really one greeting.
+        """
+        text = text.strip()
+        if not text or text == self._last_recovered_text:
+            return
+        if not self._assistant_has_spoken:
+            applog.info(
+                f"[INTERRUPT GUARD][{self.session_label}] dropped turn vetoed, "
+                f"not recovering (assistant hasn't spoken yet): text={text!r}"
+            )
+            return
+        if self.is_non_answer_for_current_posture(text) or self.is_redundant_turn(text):
+            applog.info(
+                f"[INTERRUPT GUARD][{self.session_label}] dropped turn vetoed, "
+                f"not recovering: text={text!r}"
+            )
+            return
+        self._last_recovered_text = text
+        applog.info(
+            f"[INTERRUPT GUARD][{self.session_label}] recovering dropped turn: text={text!r}"
+        )
+        # By the time LiveKit's own pipeline drops a turn this way, the
+        # SpeechHandle it was checking against didn't exist yet when
+        # _interrupt() made its (single, latched) attempt above — that
+        # handle now exists, is mid-flight, and nothing will stop it. Left
+        # alone it plays out in full and the reply generated below queues
+        # right behind it: the caller hears the stale answer and then the
+        # real one, back to back. Force-interrupt again here, against
+        # whatever is actually current *now*, so the recovered reply
+        # replaces it instead of trailing it.
+        try:
+            self.session.interrupt(force=True)
+        except RuntimeError as exc:
+            applog.warning(
+                f"[INTERRUPT GUARD][{self.session_label}] recovery interrupt not applied: {exc}"
+            )
+        self.session.generate_reply(user_input=text)
 
     def set_assistant_text(self, text: str, *, source: str) -> None:
         if not text.strip():
             return
         posture = infer_agent_posture(text)
         self.state.posture = posture
+        self.state.assistant_text_normalized = normalize_text(text)
+        clauses = [part.strip() for part in re.split(r"[.!?।]+", text) if part.strip()]
+        self.state.confirmation_has_explanatory_prefix = (
+            posture is AgentPosture.AWAITING_CONFIRMATION
+            and len(clauses) > 1
+            and any(
+                classify_assistant_sentence(clause).posture is AgentPosture.EXPLAINING
+                for clause in clauses[:-1]
+            )
+        )
         applog.info(
             f"[INTERRUPT GUARD][{self.session_label}] posture={posture.value} "
-            f"source={source} assistant_text={text!r}"
+            f"source={source} explanatory_prefix={self.state.confirmation_has_explanatory_prefix} "
+            f"assistant_text={text!r}"
         )
 
     def on_agent_state_changed(self, event: object) -> None:
         new_state = getattr(event, "new_state", None)
-        if new_state == "speaking":
-            if not self.state.agent_speaking:
+        if new_state in {"speaking", "thinking"}:
+            # Only reset at the true start of a turn's active window (the
+            # thinking->speaking transition inside one turn must NOT reset:
+            # it would wipe out overlap/interrupt state a user's speech
+            # already earned during that same turn's thinking phase).
+            if not self.state.agent_active:
                 self._reset_overlap()
-            self.state.agent_speaking = True
+            self.state.agent_speaking = new_state == "speaking"
+            self.state.agent_active = True
             return
-        if new_state in {"idle", "listening", "thinking"}:
+        if new_state in {"idle", "listening"}:
             self.state.agent_speaking = False
+            self.state.agent_active = False
             self._reset_overlap()
 
     def on_user_state_changed(self, event: object) -> None:
         new_state = getattr(event, "new_state", None)
-        if new_state == "speaking" and self.state.agent_speaking:
+        if new_state == "speaking" and self.state.agent_active:
             if self.state.user_speech_started_at is None:
                 self.state.user_speech_started_at = time.monotonic()
                 self.state.last_transcript_event = None
                 self.state.transcript_evolution.clear()
                 self.turn_analyzer.begin_overlap()
+                self.state.turn_overlapped_agent = True
             return
         # Final STT commonly arrives just after VAD transitions to listening.
         if new_state == "away":
@@ -556,6 +887,7 @@ class InterruptionGuard:
         role = getattr(item, "role", None)
         text = getattr(item, "text_content", "") or ""
         if role == "assistant":
+            self._assistant_has_spoken = True
             self.set_assistant_text(text, source="conversation")
         elif role == "user":
             # If this turn came out of a barge-in, use the verdict already
@@ -569,7 +901,31 @@ class InterruptionGuard:
                 self.turn_analyzer.commit_user_turn(text)
 
     def on_user_input_transcribed(self, event: object) -> None:
-        if not self.state.agent_speaking or self.state.interrupt_fired:
+        if not self.state.agent_active:
+            return
+        if self.state.interrupt_fired:
+            # The guard already committed to interrupting on an earlier
+            # (possibly non-final) transcript for this utterance. STT can
+            # still keep revising that utterance after this point — e.g.
+            # Deepgram emitting a corrected/shorter is_final transcript
+            # once it finishes settling — and LiveKit's own turn detector
+            # (not this guard) decides which version actually becomes the
+            # committed user turn handed to the LLM. Previously that
+            # revision was silently dropped here with no trace, so when the
+            # LLM's reply looked like it answered something the user never
+            # said, there was nothing in the log to compare it against. Log
+            # it (without acting on it — the guard has nothing left to do
+            # once it has already fired) so the transcript that triggered
+            # the interrupt and whatever STT settled on afterward are both
+            # visible side by side.
+            raw_text = (getattr(event, "transcript", "") or "").strip()
+            if raw_text:
+                is_final = bool(getattr(event, "is_final", False))
+                applog.info(
+                    f"[INTERRUPT GUARD][{self.session_label}] post_interrupt_transcript "
+                    f"is_final={is_final} transcript={raw_text!r} "
+                    f"triggering_transcript_evolution={self.state.transcript_evolution!r}"
+                )
             return
 
         raw_text = (getattr(event, "transcript", "") or "").strip()
@@ -615,6 +971,8 @@ class InterruptionGuard:
             is_final=is_final,
             posture=self.state.posture,
             speech_duration=speech_duration,
+            assistant_text_normalized=self.state.assistant_text_normalized,
+            confirmation_has_explanatory_prefix=self.state.confirmation_has_explanatory_prefix,
         )
 
         # A candidate interruption still might not be worth cutting the
@@ -660,12 +1018,18 @@ class InterruptionGuard:
             if analysis.delta is TurnDelta.REDUNDANT:
                 decision = InterruptDecision.IGNORE
                 reason = f"redundant_turn:{analysis.reason}"
+                # Snapshot this verdict for recover_dropped_turn — see
+                # GuardState.last_final_redundant_text for why.
+                if is_final:
+                    self.state.last_final_redundant_text = raw_text.strip()
                 # A dismissed fragment shouldn't leave the interim-
                 # stability clock running: any further speech in this
                 # same overlap must be judged on its own duration, not
                 # inherit time already spent on the discarded fragment.
                 self._reset_timer()
             else:
+                if is_final:
+                    self.state.last_final_redundant_text = None
                 # analysis.delta is just INTERRUPT here (turn evolution
                 # now only distinguishes REDUNDANT from everything else),
                 # so analysis.reason carries the actual diagnostic detail
@@ -674,24 +1038,50 @@ class InterruptionGuard:
 
         self.state.last_decision = decision
 
+        # LiveKit's own turn-completion pipeline runs independently of this
+        # guard: whenever it sees a finalized user turn while the agent's
+        # current speech is non-interruptible (true for every reply here,
+        # since interruption.enabled=False makes this guard the sole
+        # interruption owner — see the TurnHandlingOptions comment in
+        # agent_stt_llm_tts_v1.py), it drops that turn *before* it reaches
+        # on_user_turn_completed: no LLM call, no chat history entry, just a
+        # bare "skipping reply to user input, current speech generation
+        # cannot be interrupted" warning with none of this context attached
+        # (agent_activity.py:2455-2461 in livekit-agents 1.6.10).
+        #
+        # For IGNORE that drop is harmless: is_non_answer_for_current_posture
+        # would have vetoed the exact same text via StopResponse anyway, so
+        # nothing is lost. INTERRUPT is also safe — `_interrupt()` below
+        # forces the current speech to actually interrupt, so the SDK's own
+        # pipeline no longer sees it as non-interruptible by the time it
+        # runs. The one gap is a *final* transcript that resolves to WAIT:
+        # classify_interruption deliberately doesn't trust every is_final
+        # (see its module docstring), so it can leave genuinely final
+        # content sitting in limbo, un-interrupted and un-vetoed, right
+        # where the SDK's drop can take it with no recovery. Tag that one
+        # combination distinctly so it's greppable instead of indistinguishable
+        # from the harmless cases above.
+        drop_risk = "possible_turn_loss" if (is_final and decision is InterruptDecision.WAIT) else "none"
+
         applog.info(
             f"[INTERRUPT GUARD][{self.session_label}] posture={self.state.posture.value} "
             f"decision={decision.value} reason={reason} is_final={is_final} "
             f"duration={speech_duration:.3f}s onset={onset_source} words={word_count(text)} "
-            f"turn_delta={turn_delta.value if turn_delta else 'n/a'} transcript={raw_text!r}"
+            f"turn_delta={turn_delta.value if turn_delta else 'n/a'} drop_risk={drop_risk} "
+            f"transcript={raw_text!r}"
         )
-        if self.on_event is not None:
-            self.on_event(
-                "decision",
-                {
-                    "decision": decision.value,
-                    "reason": reason,
-                    "is_final": is_final,
-                    "speech_duration": speech_duration,
-                    "posture": self.state.posture.value,
-                    "turn_delta": turn_delta.value if turn_delta else None,
-                },
-            )
+        self._notify(
+            "decision",
+            {
+                "decision": decision.value,
+                "reason": reason,
+                "is_final": is_final,
+                "speech_duration": speech_duration,
+                "posture": self.state.posture.value,
+                "turn_delta": turn_delta.value if turn_delta else None,
+                "drop_risk": drop_risk,
+            },
+        )
         if decision is InterruptDecision.INTERRUPT:
             self._interrupt(reason)
 
@@ -700,8 +1090,7 @@ class InterruptionGuard:
         applog.info(
             f"[INTERRUPT GUARD][{self.session_label}] false_interruption resumed={resumed}"
         )
-        if self.on_event is not None:
-            self.on_event("false_interruption", {"resumed": resumed})
+        self._notify("false_interruption", {"resumed": resumed})
 
     def _reset_timer(self) -> None:
         """Reset only the interim-stability clock.
@@ -719,6 +1108,7 @@ class InterruptionGuard:
     def _reset_overlap(self) -> None:
         self._reset_timer()
         self.state.interrupt_fired = False
+        self.state.turn_overlapped_agent = False
         self.turn_analyzer.begin_overlap()
 
     def _interrupt(self, reason: str) -> None:
@@ -757,6 +1147,31 @@ class InterruptionGuard:
             applog.exception(f"[INTERRUPT GUARD][{self.session_label}] manual interrupt failed")
 
 
+_DROPPED_TURN_LOG_MESSAGE = (
+    "skipping reply to user input, current speech generation cannot be interrupted"
+)
+
+
+class _DroppedTurnLogHandler(logging.Handler):
+    """Bridges agent_activity.py's own drop warning back to the guard.
+
+    See InterruptionGuard.recover_dropped_turn for why this is the only
+    available signal for that drop — there is no public session event for
+    it, only this log line, carrying the dropped text as extra={"user_input": ...}.
+    """
+
+    def __init__(self, callback: Callable[[str], None]) -> None:
+        super().__init__(level=logging.WARNING)
+        self._callback = callback
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage() != _DROPPED_TURN_LOG_MESSAGE:
+            return
+        user_input = getattr(record, "user_input", "")
+        if user_input:
+            self._callback(user_input)
+
+
 def attach_interruption_guard(
     session: AgentSession,
     session_label: str | None = None,
@@ -770,4 +1185,10 @@ def attach_interruption_guard(
     session.on("conversation_item_added")(guard.on_conversation_item_added)
     session.on("user_input_transcribed")(guard.on_user_input_transcribed)
     session.on("agent_false_interruption")(guard.on_false_interruption)
+
+    dropped_turn_handler = _DroppedTurnLogHandler(guard.recover_dropped_turn)
+    logging.getLogger("livekit.agents").addHandler(dropped_turn_handler)
+    session.on("close")(
+        lambda _event: logging.getLogger("livekit.agents").removeHandler(dropped_turn_handler)
+    )
     return guard

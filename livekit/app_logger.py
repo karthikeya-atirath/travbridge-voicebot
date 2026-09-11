@@ -39,6 +39,24 @@ def _build_logger() -> logging.Logger:
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)
 
+    # The TTS/STT/LLM plugins and the LiveKit pipeline itself (agent_activity,
+    # perform_tts_inference, etc.) log through their own logger tree
+    # ("livekit.agents", "livekit.plugins.sarvam", ...), completely separate
+    # from this "voice_bot.*" logger. Those are where TTS synthesis errors,
+    # websocket drops, and API failures actually get logged (e.g. Sarvam's
+    # tts.py "Sarvam TTS API error", "WebSocket connection failed") — without
+    # this, a silently-failing TTS call leaves zero trace in app_voice.log,
+    # since our own code only ever logs that a reply was *scheduled*, not
+    # that it was actually spoken.
+    sdk_log_level = os.environ.get("SDK_LOG_LEVEL", "WARNING").upper()
+    for sdk_logger_name in ("livekit.agents", "livekit.plugins.sarvam"):
+        sdk_logger = logging.getLogger(sdk_logger_name)
+        if file_handler in sdk_logger.handlers:
+            continue
+        sdk_logger.addHandler(file_handler)
+        sdk_logger.addHandler(stream_handler)
+        sdk_logger.setLevel(getattr(logging, sdk_log_level, logging.WARNING))
+
     return logger
 
 

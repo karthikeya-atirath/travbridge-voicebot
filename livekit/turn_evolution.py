@@ -76,6 +76,11 @@ LEXICAL_ACKNOWLEDGEMENT_TOKENS = frozenset({
     "alright",
     "sure",
     "understood",
+    # Bare enthusiasm interjections ("yeah, great") — without these, "great"
+    # survives stopword/ack stripping as a lone 5-letter "new" token and gets
+    # misclassified as new_information, forcing a second, near-duplicate LLM
+    # turn and tool call for what was just an acknowledgement.
+    "great", "cool", "nice", "awesome", "perfect", "good",
     "haan", "han",
     "haanji", "hanji",
     "acha", "achha", "accha",
@@ -213,6 +218,14 @@ NUMBER_CANON: dict[str, str] = {
 }
 
 
+SEMANTIC_TOKEN_CANON: dict[str, str] = {
+    "customize": "custom", "customized": "custom", "customization": "custom",
+    "customise": "custom", "customised": "custom", "customisation": "custom",
+    "personalize": "personal", "personalized": "personal", "personalization": "personal",
+    "personalise": "personal", "personalised": "personal", "personalisation": "personal",
+}
+
+
 # ============================================================
 # RESULT TYPES
 # ============================================================
@@ -274,7 +287,7 @@ class ActiveTurn:
 def extract_keyword_tokens(text: str) -> tuple[str, ...]:
 
     return tuple(
-        NUMBER_CANON.get(token, token)
+        SEMANTIC_TOKEN_CANON.get(token, NUMBER_CANON.get(token, token))
         for token in tokenize(text)
         if token not in STOPWORDS
         and token not in ACKNOWLEDGEMENTS
@@ -433,18 +446,17 @@ class TurnEvolutionAnalyzer:
         """Classify a *finalized* user turn against the active committed
         turn, independent of the live barge-in overlap tracking above.
 
-        classify_overlap() (and the last_analysis it records) only ever
-        runs while the agent is speaking — on_user_input_transcribed short-
-        circuits otherwise. That leaves the ordinary, non-overlapping case
-        (the user replies after the agent has already gone quiet, which is
-        most turns) with no redundancy check at all: a restatement of an
-        already-answered slot ("Hyderabad" again, after the agent moved on
-        to asking for travel dates) sailed straight through to the LLM
-        because there was never any classify_overlap() call to have set
-        last_analysis for it. Call this instead from wherever a finalized
-        transcript is about to become the next LLM turn, regardless of
-        whether it overlapped playback. No side effects on candidate_text/
-        last_analysis — those belong solely to the overlap-commit workflow.
+        Distinct from classify_overlap() in mechanism, not in when it's
+        used: interruption_guard.is_redundant_turn() is this method's only
+        caller, and it only invokes this for a turn that actually talked
+        over the agent's current turn (turn_overlapped_agent) — see that
+        docstring for why comparing a turn that arrived *after* the agent
+        had already gone quiet produces false positives (the same words can
+        be a legitimate fresh reply to a different, later question). This
+        method itself doesn't enforce that scoping; it just does the
+        comparison once the caller has decided it's warranted. No side
+        effects on candidate_text/last_analysis — those belong solely to
+        the overlap-commit workflow.
         """
         return self._classify_against_active(
             transcript, expects_short_answer=expects_short_answer
@@ -479,7 +491,7 @@ class TurnEvolutionAnalyzer:
                 "no_active_turn",
             )
 
-        # EXPECTED SHORT ANSWER -> INTERRUPT
+        # EXPECTED SHORT ANSWER -> INTERRUPT (usually)
         #
         # A generic "yeah"/"haan" IS a complete answer when the agent just
         # asked a yes/no confirmation, or when it's the literal repeat the
@@ -489,7 +501,23 @@ class TurnEvolutionAnalyzer:
         # AWAITING_CLARIFICATION, not AWAITING_ANSWER: an open question
         # expects real content, and a bare restatement of an already-given
         # slot genuinely adds nothing there — see is_subsequence below.
+        #
+        # Still requires at least one token of real length, though: this
+        # branch used to trust ANY non-empty overlap fragment unconditionally,
+        # which let a single-character STT blip (background noise, a clipped
+        # syllable, a TTS-echo scrap that slipped past the interruption
+        # guard's own echo filter) stop playback just as readily as a real
+        # "haan"/"no". Checked on the raw tokens (not extract_keyword_tokens)
+        # since a bare acknowledgement/negation IS the valid answer here and
+        # must not be stripped as filler.
         if expects_short_answer:
+
+            if not any(len(token) >= 2 for token in tokenize(incoming)):
+
+                return TurnAnalysis(
+                    TurnDelta.REDUNDANT,
+                    "insufficient_content_for_expected_answer",
+                )
 
             return TurnAnalysis(
                 TurnDelta.INTERRUPT,
@@ -523,6 +551,19 @@ class TurnEvolutionAnalyzer:
             return TurnAnalysis(
                 TurnDelta.REDUNDANT,
                 "existing_information",
+            )
+
+        # The tokens that survived the subsequence check are what would
+        # justify calling this "new_information" — but if every one of them
+        # is a single-character scrap, that's far more likely a garbled STT
+        # fragment than an actual new word, and trusting it stopped playback
+        # on noise alone. Require at least one token substantial enough to
+        # plausibly be real content.
+        if not any(len(token) >= 2 for token in incoming_tokens):
+
+            return TurnAnalysis(
+                TurnDelta.REDUNDANT,
+                "insufficient_new_content",
             )
 
         # OTHERWISE -> INTERRUPT
@@ -566,4 +607,3 @@ class TurnEvolutionAnalyzer:
 
         self.candidate_text = ""
         self.candidate_normalized = ""
-

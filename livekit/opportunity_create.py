@@ -573,7 +573,8 @@ async def create_opportunity_tool(
         applog.info(updated_data)
 
         try:
-            updater.send_to_api(updated_data)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, updater.send_to_api, updated_data)
             applog.info("📤 Chat Data (with conversation) sent to API successfully")
         except Exception as e:
             applog.error(f"❌ Failed to send chat data with conversation: {str(e)}")
@@ -595,7 +596,8 @@ async def create_opportunity_tool(
         applog.info(updated_data)
 
         try:
-            updater.send_to_api(updated_data)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, updater.send_to_api, updated_data)
             applog.info("📤 Fallback Chat Data sent to API successfully")
         except Exception as e:
             applog.error(f"❌ Failed to send fallback chat data: {str(e)}")

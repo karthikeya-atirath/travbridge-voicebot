@@ -12,10 +12,21 @@ print(f"[ENV] Loaded .env_{APP_ENV}")
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8000")
 ENABLE_SPEECH_TUNING = os.environ.get("ENABLE_SPEECH_TUNING", "true").lower() == "true"
-SPEECH_PROFILE = os.environ.get("SPEECH_PROFILE", "slow_steady")
+# fast_aggressive for the opening stretch of the call (the classifier has no
+# per-caller evidence yet for the first `window` turns — see
+# attach_speech_tuner's window=5 below) rather than the previously neutral
+# slow_steady: a snappy, low-latency first impression matters more during
+# those first few turns than avoiding the occasional false split on a fast
+# talker's breathing pause, which the classifier corrects within 5 turns
+# anyway. Set SPEECH_PROFILE=slow_steady (or another CATEGORY_CONFIGS key)
+# to override.
+SPEECH_PROFILE = os.environ.get("SPEECH_PROFILE", "fast_aggressive")
 # The semantic turn detector releases clearly complete turns at min_delay.
-# This ceiling is only the patience budget for uncertain, incomplete turns.
-MAX_ENDPOINTING_DELAY = float(os.environ.get("MAX_ENDPOINTING_DELAY", "1.2"))
+# max_delay is only the patience budget for uncertain, incomplete turns —
+# sourced per-profile from CATEGORY_CONFIGS below (same as min_delay)
+# rather than one global figure, since how long an "uncertain" turn is
+# worth waiting out differs by caller (a fast talker's uncertain turn isn't
+# worth the same patience as a hesitant one's).
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io, TurnHandlingOptions, inference
@@ -23,7 +34,8 @@ from livekit.plugins import google, silero, deepgram, sarvam
 from google.genai.types import HttpOptions, ThinkingConfig
 from speech_tuner import attach_speech_tuner, CATEGORY_CONFIGS
 from interruption_guard import InterruptionGuard, attach_interruption_guard
-from call_metrics import attach_call_metrics
+from turn_logger import TurnLatencyTracker, attach_turn_logger
+from silence_filler import FillerRegistry, attach_silence_filler
 from tools import (
     get_travel_package,
     get_all_bogo_packages,
@@ -53,30 +65,133 @@ class Assistant(agents.Agent):
     def __init__(self, full_instructions: str) -> None:
         super().__init__(instructions=full_instructions)
         self.interruption_guard: InterruptionGuard | None = None
+        self.turn_logger: TurnLatencyTracker | None = None
+        self.filler_registry: FillerRegistry | None = None
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Capture generated text so posture is available during playback."""
         collected_text = ""
-        async for chunk in agents.Agent.default.llm_node(
-            self, chat_ctx, tools, model_settings
-        ):
-            delta = getattr(chunk, "delta", None)
-            content = getattr(delta, "content", None)
-            if isinstance(content, str):
-                collected_text += content
-                if (
-                    self.interruption_guard is not None
-                    and collected_text.rstrip().endswith(("?", ".", "!", "।"))
-                ):
-                    self.interruption_guard.set_assistant_text(
-                        collected_text, source="llm_clause"
-                    )
-            yield chunk
+        if self.turn_logger is not None:
+            # Marks the moment the request is actually handed to the LLM —
+            # distinct from when the user stopped speaking, which also
+            # includes STT/EOU/guard time already accounted for elsewhere.
+            self.turn_logger.on_llm_start()
+        try:
+            async for chunk in agents.Agent.default.llm_node(
+                self, chat_ctx, tools, model_settings
+            ):
+                if self.turn_logger is not None:
+                    self.turn_logger.on_llm_first_signal()
+                delta = getattr(chunk, "delta", None)
+                content = getattr(delta, "content", None)
+                if isinstance(content, str):
+                    if not collected_text and self.turn_logger is not None:
+                        self.turn_logger.on_llm_first_token()
+                    collected_text += content
+                    if (
+                        self.interruption_guard is not None
+                        and collected_text.rstrip().endswith(("?", ".", "!", "।"))
+                    ):
+                        self.interruption_guard.set_assistant_text(
+                            collected_text, source="llm_clause"
+                        )
+                yield chunk
+        except asyncio.CancelledError:
+            if self.turn_logger is not None:
+                self.turn_logger.on_llm_cancelled()
+            raise
 
         if self.interruption_guard is not None and collected_text.strip():
             self.interruption_guard.set_assistant_text(
                 collected_text, source="llm_complete"
             )
+        if self.turn_logger is not None:
+            self.turn_logger.on_llm_complete(collected_text)
+
+    async def tts_node(self, text, model_settings):
+        """Log whether a generated reply actually reaches synthesized audio.
+
+        llm_node above proves the LLM produced text, but that text still has
+        to survive a separate handoff into TTS before anything is spoken —
+        the pipeline can cancel a scheduled SpeechHandle (e.g. a newer user
+        turn superseding it, or the session tearing down) after the LLM
+        finished but before/while synthesis runs, which previously left zero
+        trace: app_voice.log would show a complete llm_complete line and
+        then nothing, indistinguishable from TTS itself silently failing.
+        Sarvam's own plugin logger already reports genuine synthesis errors
+        (wired into this same log file in app_logger.py), so this only needs
+        to record the boundary: did synthesis start for this text, and did
+        it run to completion, get cancelled, or raise.
+        """
+        chars_in = 0
+        frame_count = 0
+        started = False
+        first_frame_seen = False
+        # A silence-filler line ("Just a moment.") is a separate SpeechHandle
+        # spoken while the real reply is still being generated — it goes
+        # through this same tts_node override and flips agent_state to
+        # "speaking" just like a real reply would. Checking it against the
+        # filler registry here is what keeps that from being logged/tracked
+        # as if the real response had started (see silence_filler.py).
+        is_filler = (
+            self.filler_registry is not None
+            and self.filler_registry.is_filler(self.session.current_speech)
+        )
+
+        async def _observed_text():
+            nonlocal chars_in, started
+            async for chunk in text:
+                if not started:
+                    started = True
+                    applog.info(f"[TTS] synthesis starting filler={is_filler}")
+                    if self.turn_logger is not None and not is_filler:
+                        self.turn_logger.on_tts_start()
+                    if not is_filler and self.filler_registry is not None:
+                        # A real reply's synthesis has begun — end the
+                        # silence filler's "thinking" dwell window now
+                        # instead of waiting for agent_state_changed to
+                        # report "speaking" (which only happens once audio
+                        # is actually forwarded, a further TTS-TTFB delay
+                        # away). Otherwise a filler can still fire in that
+                        # gap, talking over or needlessly preceding a reply
+                        # that was already on its way.
+                        self.filler_registry.notify_real_tts_start()
+                chars_in += len(chunk)
+                yield chunk
+
+        try:
+            async for frame in agents.Agent.default.tts_node(
+                self, _observed_text(), model_settings
+            ):
+                frame_count += 1
+                if not first_frame_seen:
+                    first_frame_seen = True
+                    if self.turn_logger is not None and not is_filler:
+                        self.turn_logger.on_tts_first_audio()
+                yield frame
+        except asyncio.CancelledError:
+            applog.info(
+                f"[TTS] synthesis cancelled filler={is_filler} chars_in={chars_in} frames_out={frame_count}"
+            )
+            if self.turn_logger is not None and not is_filler:
+                self.turn_logger.on_tts_cancelled(chars_in)
+            raise
+        except Exception:
+            applog.exception(
+                f"[TTS] synthesis errored filler={is_filler} chars_in={chars_in} frames_out={frame_count}"
+            )
+            raise
+        else:
+            if started:
+                applog.info(
+                    f"[TTS] synthesis complete filler={is_filler} chars_in={chars_in} frames_out={frame_count}"
+                )
+                if self.turn_logger is not None and not is_filler:
+                    self.turn_logger.on_tts_complete(chars_in)
+            else:
+                applog.info("[TTS] synthesis node ran with no input text")
+                if self.turn_logger is not None and not is_filler:
+                    self.turn_logger.on_tts_no_output()
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         """Veto generation for turns that carry no new meaning.
@@ -102,16 +217,25 @@ class Assistant(agents.Agent):
         if self.interruption_guard is None:
             return
         text = new_message.text_content or ""
+        if self.turn_logger is not None:
+            self.turn_logger.start_turn(text)
         if self.interruption_guard.is_non_answer_for_current_posture(text):
             applog.info(
                 f"[ASSISTANT] suppressing non-answer filler as LLM turn: text={text!r}"
             )
+            if self.turn_logger is not None:
+                self.turn_logger.suppress_turn("non_answer_filler")
             raise agents.StopResponse()
         if self.interruption_guard.is_redundant_turn(text):
             applog.info(
                 f"[ASSISTANT] suppressing redundant turn as LLM turn: text={text!r}"
             )
+            if self.turn_logger is not None:
+                self.turn_logger.suppress_turn("redundant_turn")
             raise agents.StopResponse()
+        applog.info(
+            f"[ASSISTANT] user turn accepted as LLM turn: text={text!r}"
+        )
 
 
 server = AgentServer()
@@ -152,15 +276,16 @@ async def my_agent(ctx: agents.JobContext):
     # ────────────────────────────────────────────────
     #               Session Configuration
     # ────────────────────────────────────────────────
-    # Start every call on the neutral profile (moderate pace/pause tolerance,
-    # per speech_classifier.py's signatures) rather than an aggressive one:
-    # the classifier has no evidence yet for the first `window` turns, and
-    # starting "fast_aggressive" (125ms STT endpointing, 175ms turn min_delay)
-    # blindly assumed every caller was a fast talker, splitting a normal
-    # mid-sentence breathing pause into two turns and getting two separate
-    # agent responses out of one utterance. Adapts to the caller's actual
-    # pattern every five turns after that.
-    # Set ENABLE_SPEECH_TUNING=false only when a fixed profile is required.
+    # Every call starts on SPEECH_PROFILE (fast_aggressive by default — see
+    # its definition above) for the first `window` turns, since the
+    # classifier has no per-caller evidence yet at that point. Note
+    # fast_aggressive's STT endpointing is pinned to the shared 200ms floor
+    # (_MIN_STT_ENDPOINTING_MS in speech_tuner.py), not the more aggressive
+    # 125ms once used here — that lower value was a direct contributor to
+    # false interruptions/turn splits on ordinary breathing pauses, so it's
+    # held at 200ms across every profile until STT/interruption stability
+    # improves. Adapts to the caller's actual pattern every five turns after
+    # that. Set ENABLE_SPEECH_TUNING=false only when a fixed profile is required.
     profile_name = SPEECH_PROFILE if SPEECH_PROFILE in CATEGORY_CONFIGS else "slow_steady"
     _default_profile = CATEGORY_CONFIGS[profile_name]
     applog.info(
@@ -204,7 +329,7 @@ async def my_agent(ctx: agents.JobContext):
             endpointing={
                 "mode": "dynamic",
                 "min_delay": _default_profile["endpointing"]["min_delay"],
-                "max_delay": MAX_ENDPOINTING_DELAY,
+                "max_delay": _default_profile["endpointing"]["max_delay"],
             },
             interruption={
                 # The semantic guard is the single interruption owner. Native
@@ -217,30 +342,10 @@ async def my_agent(ctx: agents.JobContext):
                 "resume_false_interruption": False,
             },
             preemptive_generation={
-                # LLM-level preemptive generation stays on (the "enabled" key
-                # defaults True and is left alone): the LLM speculatively
-                # drafts a reply from a stable interim transcript, and is
-                # only ever used if the eventual final transcript, chat
-                # context, tools, and tool_choice all still match — so it's
-                # a free latency win with no correctness risk, and it never
-                # bypasses Assistant.on_user_turn_completed's redundant/
-                # filler-turn veto (that hook still runs on the real final
-                # turn regardless of a pending preemptive guess).
-                #
-                # preemptive_tts stays False on purpose, though: turning it
-                # on starts synthesizing *and playing* audio from that same
-                # unconfirmed guess, before end-of-turn is confirmed. If the
-                # guess is later invalidated (the user kept talking through
-                # what looked like a pause), the bot has already started
-                # speaking and has to abort mid-word — an audible false
-                # start, not just a quieter missed interruption. That risk
-                # lands squarely on Hindi/Hinglish: verb-final word order
-                # and clause-final negation/particles ("... nahi, Mumbai")
-                # mean an early partial transcript is far more likely to
-                # reverse or complete its meaning at the very end than an
-                # English SVO sentence is. Given micro-pause mishandling is
-                # the primary complaint, preemptive_tts=True would add a new,
-                # more visible version of the same failure mode.
+                # Final-turn filler and redundancy checks must run before any LLM work.
+                # Disable speculative generation so a draft cannot survive or be reused
+                # after on_user_turn_completed vetoes the finalized transcript.
+                "enabled": False,
                 "preemptive_tts": False,
             },
         ),
@@ -286,6 +391,11 @@ async def my_agent(ctx: agents.JobContext):
     MAX_REPROMPTS = 5
     reprompt_count = 0
     is_agent_speaking = False
+    # Filled in once attach_turn_logger runs (after this closure is
+    # defined) — a re-prompt during an away period has no STT text to
+    # trigger start_turn() from, so it must be logged explicitly to keep
+    # per-turn latency logging covering every reply, not just LLM-driven ones.
+    turn_logger_holder: dict = {"tracker": None}
                                                      
     # ────────────────────────────────────────────────
     #                Event Handlers
@@ -393,8 +503,11 @@ async def my_agent(ctx: agents.JobContext):
                 now = time.time()
                 if (now - last_prompt_time >= REPROMPT_INTERVAL) and not is_agent_speaking:
                     reprompt_count += 1
+                    tracker = turn_logger_holder["tracker"]
                     if reprompt_count > MAX_REPROMPTS:
                         print(f"[RE-PROMPT] Max reprompts ({MAX_REPROMPTS}) exceeded — disconnecting call")
+                        if tracker is not None:
+                            tracker.start_turn("", event_type="silence_reprompt")
                         try:
                             await session.say(
                                 "I'm not getting any response from your end. It seems like you may not be available right now. I'll go ahead and end this call. Feel free to call us back anytime. Goodbye!",
@@ -403,15 +516,25 @@ async def my_agent(ctx: agents.JobContext):
                             await asyncio.sleep(3.0)
                         except Exception:
                             pass
+                        if tracker is not None:
+                            tracker.suppress_turn("max_reprompts_disconnect")
                         await ctx.room.disconnect()
                         return
                     print(f"[RE-PROMPT] Sending message ({reprompt_count}/{MAX_REPROMPTS})")
                     message = random.choice(REPROMPT_MESSAGES)
+                    if tracker is not None:
+                        tracker.start_turn("", event_type="silence_reprompt")
+                        # No llm_node runs for a direct session.say() — set the
+                        # text up front so on_tts_complete's flush (which
+                        # happens inside the await below) has it to write out.
+                        tracker.on_llm_complete(message)
                     try:
                         await session.say(message, allow_interruptions=True)
                         last_prompt_time = now
                     except Exception as e:
                         print(f"[RE-PROMPT ERROR] {e}")
+                        if tracker is not None:
+                            tracker.suppress_turn("reprompt_say_failed")
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -435,14 +558,21 @@ async def my_agent(ctx: agents.JobContext):
     # Adaptive classification and tuning are enabled by default. Each five-turn
     # window can move the live session to the matching speech profile.
     # ────────────────────────────────────────────────
+    interruption_guard = attach_interruption_guard(session, session_label=customer_id)
     if ENABLE_SPEECH_TUNING:
-        attach_speech_tuner(session, session_label=customer_id)
-    call_metrics = attach_call_metrics(session, session_label=customer_id)
-    interruption_guard = attach_interruption_guard(
-        session, session_label=customer_id, on_event=call_metrics.record_guard_event
-    )
+        attach_speech_tuner(
+            session, session_label=customer_id, initial_profile=profile_name, interruption_guard=interruption_guard
+        )
     assistant = Assistant(full_instructions=full_instructions)
     assistant.interruption_guard = interruption_guard
+    assistant.filler_registry = attach_silence_filler(session, session_label=customer_id)
+    assistant.turn_logger = attach_turn_logger(
+        session,
+        session_label=customer_id,
+        interruption_guard=interruption_guard,
+        filler_registry=assistant.filler_registry,
+    )
+    turn_logger_holder["tracker"] = assistant.turn_logger
 
     # ────────────────────────────────────────────────
     #               Start the session
