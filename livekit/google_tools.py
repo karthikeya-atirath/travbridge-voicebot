@@ -13,10 +13,11 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_random_exponential
-from livekit.agents import function_tool, RunContext
+from livekit.agents import RunContext
 
 from app_logger import applog
 import chat_history as _ch_module
+from tool_filler import tool_filler_for, safe_function_tool
 
 
 # =============================================================================
@@ -151,7 +152,35 @@ def _normal_config() -> types.GenerateContentConfig:
     )
 
 
+class _EmptyLLMJsonError(Exception):
+    """The model's raw text didn't parse into a usable JSON object.
+
+    Raised (and retried below, alongside any transport/API exception
+    generate_content itself might raise) so a second sampling attempt
+    actually gets a chance to run — generation is non-deterministic, so a
+    retry at the same temperature often succeeds where the first attempt
+    produced junk or got cut off.
+    """
+
+
+@retry(
+    wait=wait_random_exponential(multiplier=1, max=20),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 def _call_llm_json_sync(prompt: str, schema: Type[BaseModel]) -> Dict[str, Any]:
+    """Call Gemini for structured JSON, retrying up to 3x on a transport/API
+    failure or on output that doesn't parse as JSON.
+
+    This is the one chokepoint every @safe_function_tool() in this file calls
+    through for its data (see _call_llm_json below) — fixing retry here
+    fixes it for all of them at once, rather than duplicating a per-tool
+    retry fix ~12 times. Each of those tools has its own broad
+    except-Exception-return-a-dict handling that would otherwise swallow
+    any exception raised here before its own (also present, also
+    historically dead) @retry ever saw it; retrying inside this function,
+    before that swallowing code is reached, is what actually makes it work.
+    """
     client = _get_vertex_client()
 
     full_prompt = f"""
@@ -175,6 +204,11 @@ Task:
 
     raw_text = getattr(response, "text", "") or ""
     parsed = _extract_json_object(raw_text)
+    if not parsed:
+        # Carries the raw text through so a final, retries-exhausted
+        # failure can still report what the model actually said (matches
+        # the previous non-retrying behavior, which always kept raw_text).
+        raise _EmptyLLMJsonError(raw_text)
 
     return {
         "data": parsed,
@@ -186,7 +220,15 @@ Task:
 
 
 async def _call_llm_json(prompt: str, schema: Type[BaseModel]) -> Dict[str, Any]:
-    return await asyncio.to_thread(_call_llm_json_sync, prompt, schema)
+    try:
+        return await asyncio.to_thread(_call_llm_json_sync, prompt, schema)
+    except _EmptyLLMJsonError as e:
+        # Retries in _call_llm_json_sync are exhausted — fall back to the
+        # same empty-data shape callers have always handled, just now only
+        # reached after genuinely trying more than once.
+        raw_text = str(e)
+        applog.error(f"LLM JSON call exhausted retries with unparseable output: {raw_text[:2000]}")
+        return {"data": {}, "sources": [], "grounding_queries": [], "model": GEMINI_MODEL, "raw_text": raw_text}
 
 
 # =============================================================================
@@ -524,8 +566,7 @@ def _store_dest_cache(tool_name: str, key: str, result: dict):
 
 # =============================================================================
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def recommend_destinations(
     context: RunContext,  # type: ignore
     custom_user_request_input_as_string: str,
@@ -559,21 +600,26 @@ Requirements:
 - Keep descriptions short and clear.
 """
 
-        llm_result = await _call_llm_json(prompt, RecommendDestinationsResult)
-        data = llm_result.get("data") or {}
+        _rec_fillers = [
+            f"Let me find some destinations for \"{custom_user_request_input_as_string}\".",
+            "Still narrowing down the best options.",
+        ]
+        async with tool_filler_for(context, "recommend_destinations", _rec_fillers):
+            llm_result = await _call_llm_json(prompt, RecommendDestinationsResult)
+            data = llm_result.get("data") or {}
 
-        if not isinstance(data, dict) or not data:
-            result = {
-                "message": "Destination recommendations could not be parsed.",
-                "raw_text": llm_result.get("raw_text", ""),
-                "code": 502,
-            }
-            _log_tool_output("recommend_destinations", result)
-            return result
+            if not isinstance(data, dict) or not data:
+                result = {
+                    "message": "Destination recommendations could not be parsed.",
+                    "raw_text": llm_result.get("raw_text", ""),
+                    "code": 502,
+                }
+                _log_tool_output("recommend_destinations", result)
+                return result
 
-        recs = data.get("recommended_destinations") or []
-        if isinstance(recs, list):
-            data["recommended_destinations"] = await _enrich_destinations_with_images(recs[:4])
+            recs = data.get("recommended_destinations") or []
+            if isinstance(recs, list):
+                data["recommended_destinations"] = await _enrich_destinations_with_images(recs[:4])
 
         result = {
             "custom_user_request_input_as_string": custom_user_request_input_as_string,
@@ -591,8 +637,7 @@ Requirements:
         return result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_hotels(
     context: RunContext,  # type: ignore
     destination: str,
@@ -625,17 +670,22 @@ Requirements:
 - hotels can be an empty list because actual hotels will be filled from Google Places.
 """
 
-        llm_result = await _call_llm_json(prompt, DestinationHotelsResult)
-        data = llm_result.get("data") or {}
+        _hotel_fillers = [
+            f"Let me check hotel options in {destination}.",
+            "Still pulling up hotels for you.",
+        ]
+        async with tool_filler_for(context, "get_destination_hotels", _hotel_fillers):
+            llm_result = await _call_llm_json(prompt, DestinationHotelsResult)
+            data = llm_result.get("data") or {}
 
-        if not isinstance(data, dict):
-            data = {}
+            if not isinstance(data, dict):
+                data = {}
 
-        hotels = await _search_hotels_with_places(destination, custom_user_request_input_as_string, limit=4)
-        data["destination"] = destination
-        data["custom_user_request_input_as_string"] = custom_user_request_input_as_string
-        data["hotel_overview"] = data.get("hotel_overview") or f"Hotel options for {destination} based on your preference."
-        data["hotels"] = hotels
+            hotels = await _search_hotels_with_places(destination, custom_user_request_input_as_string, limit=4)
+            data["destination"] = destination
+            data["custom_user_request_input_as_string"] = custom_user_request_input_as_string
+            data["hotel_overview"] = data.get("hotel_overview") or f"Hotel options for {destination} based on your preference."
+            data["hotels"] = hotels
 
         result = {
             "destination": destination,
@@ -653,8 +703,7 @@ Requirements:
         return result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_info(
     context: RunContext,  # type: ignore
     destination: str,
@@ -686,25 +735,30 @@ Requirements:
 - Include practical_highlights as short bullet-style strings.
 """
 
-        llm_result = await _call_llm_json(prompt, DestinationInfoResult)
-        info = llm_result.get("data") or {}
+        _info_fillers = [
+            f"Let me look up {destination} for you.",
+            "Still gathering the details.",
+        ]
+        async with tool_filler_for(context, "get_destination_info", _info_fillers):
+            llm_result = await _call_llm_json(prompt, DestinationInfoResult)
+            info = llm_result.get("data") or {}
 
-        if not isinstance(info, dict) or not info:
-            result = {
-                "message": "Destination info could not be parsed.",
-                "raw_text": llm_result.get("raw_text", ""),
-                "sources": [],
-                "grounding_queries": [],
-                "code": 502,
-            }
-            _log_tool_output("get_destination_info", result)
-            return result
+            if not isinstance(info, dict) or not info:
+                result = {
+                    "message": "Destination info could not be parsed.",
+                    "raw_text": llm_result.get("raw_text", ""),
+                    "sources": [],
+                    "grounding_queries": [],
+                    "code": 502,
+                }
+                _log_tool_output("get_destination_info", result)
+                return result
 
-        top_places = info.get("top_places_to_visit") or []
-        if isinstance(top_places, list):
-            info["top_places_to_visit"] = await _enrich_places_with_images(destination, top_places[:4])
+            top_places = info.get("top_places_to_visit") or []
+            if isinstance(top_places, list):
+                info["top_places_to_visit"] = await _enrich_places_with_images(destination, top_places[:4])
 
-        info["hero_image_url"] = await _get_place_image_url(destination)
+            info["hero_image_url"] = await _get_place_image_url(destination)
 
         result = {
             "destination": destination,
@@ -724,8 +778,7 @@ Requirements:
         return result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_weather(
     context: RunContext,  # type: ignore
     destination: str,
@@ -765,7 +818,12 @@ Requirements:
 - Include what_to_pack, travel_advice, and suitable_activities as short lists.
 """
 
-        llm_result = await _call_llm_json(prompt, WeatherMonthResult)
+        _weather_fillers = [
+            f"Let me check the weather in {destination} for {month}.",
+            "Still checking that.",
+        ]
+        async with tool_filler_for(context, "get_destination_weather", _weather_fillers):
+            llm_result = await _call_llm_json(prompt, WeatherMonthResult)
         weather = llm_result.get("data") or {}
 
         if not isinstance(weather, dict) or not weather:
@@ -798,8 +856,7 @@ Requirements:
         return result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_food(
     context: RunContext,  # type: ignore
     destination: str,
@@ -838,23 +895,28 @@ Requirements:
 - Keep descriptions short and useful.
 """
 
-        llm_result = await _call_llm_json(prompt, DestinationFoodResult)
-        food = llm_result.get("data") or {}
+        _food_fillers = [
+            f"Let me check must-try food in {destination}.",
+            "Still putting that list together.",
+        ]
+        async with tool_filler_for(context, "get_destination_food", _food_fillers):
+            llm_result = await _call_llm_json(prompt, DestinationFoodResult)
+            food = llm_result.get("data") or {}
 
-        if not isinstance(food, dict) or not food:
-            result = {
-                "message": "Food info could not be parsed.",
-                "raw_text": llm_result.get("raw_text", ""),
-                "sources": [],
-                "grounding_queries": [],
-                "code": 502,
-            }
-            _log_tool_output("get_destination_food", result)
-            return result
+            if not isinstance(food, dict) or not food:
+                result = {
+                    "message": "Food info could not be parsed.",
+                    "raw_text": llm_result.get("raw_text", ""),
+                    "sources": [],
+                    "grounding_queries": [],
+                    "code": 502,
+                }
+                _log_tool_output("get_destination_food", result)
+                return result
 
-        foods = food.get("must_try_foods") or []
-        if isinstance(foods, list):
-            food["must_try_foods"] = await _enrich_foods_with_images(destination, foods[:3])
+            foods = food.get("must_try_foods") or []
+            if isinstance(foods, list):
+                food["must_try_foods"] = await _enrich_foods_with_images(destination, foods[:3])
 
         result = {
             "destination": destination,
@@ -875,8 +937,7 @@ Requirements:
 
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_budget_guide(
     context: RunContext,  # type: ignore
     destination: str,
@@ -907,7 +968,12 @@ Requirements:
 - Keep it practical for travelers.
 """
 
-        llm_result = await _call_llm_json(prompt, DestinationBudgetResult)
+        _budget_fillers = [
+            f"Let me work out a {trip_style} budget for {destination}.",
+            "Still crunching the numbers.",
+        ]
+        async with tool_filler_for(context, "get_destination_budget_guide", _budget_fillers):
+            llm_result = await _call_llm_json(prompt, DestinationBudgetResult)
         budget_guide = llm_result.get("data") or {}
 
         if not isinstance(budget_guide, dict) or not budget_guide:
@@ -939,8 +1005,7 @@ Requirements:
         return result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_sightseeing(
     context: RunContext,  # type: ignore
     destination: str,
@@ -979,23 +1044,28 @@ Requirements:
 - Keep descriptions short and UI-friendly.
 """
 
-        llm_result = await _call_llm_json(prompt, DestinationSightseeingResult)
-        sightseeing = llm_result.get("data") or {}
+        _sight_fillers = [
+            f"Let me check top sightseeing spots in {destination}.",
+            "Still pulling those together.",
+        ]
+        async with tool_filler_for(context, "get_destination_sightseeing", _sight_fillers):
+            llm_result = await _call_llm_json(prompt, DestinationSightseeingResult)
+            sightseeing = llm_result.get("data") or {}
 
-        if not isinstance(sightseeing, dict) or not sightseeing:
-            result = {
-                "message": "Sightseeing info could not be parsed.",
-                "raw_text": llm_result.get("raw_text", ""),
-                "sources": [],
-                "grounding_queries": [],
-                "code": 502,
-            }
-            _log_tool_output("get_destination_sightseeing", result)
-            return result
+            if not isinstance(sightseeing, dict) or not sightseeing:
+                result = {
+                    "message": "Sightseeing info could not be parsed.",
+                    "raw_text": llm_result.get("raw_text", ""),
+                    "sources": [],
+                    "grounding_queries": [],
+                    "code": 502,
+                }
+                _log_tool_output("get_destination_sightseeing", result)
+                return result
 
-        items = sightseeing.get("top_sightseeing") or []
-        if isinstance(items, list):
-            sightseeing["top_sightseeing"] = await _enrich_sightseeing_with_images(destination, items[:4])
+            items = sightseeing.get("top_sightseeing") or []
+            if isinstance(items, list):
+                sightseeing["top_sightseeing"] = await _enrich_sightseeing_with_images(destination, items[:4])
 
         result = {
             "destination": destination,
@@ -1015,8 +1085,7 @@ Requirements:
         return result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_activities(
     context: RunContext,  # type: ignore
     destination: str,
@@ -1057,23 +1126,28 @@ Requirements:
 - Keep descriptions short and useful.
 """
 
-        llm_result = await _call_llm_json(prompt, DestinationActivitiesResult)
-        activities = llm_result.get("data") or {}
+        _activity_fillers = [
+            f"Let me check top activities in {destination}.",
+            "Still putting that list together.",
+        ]
+        async with tool_filler_for(context, "get_destination_activities", _activity_fillers):
+            llm_result = await _call_llm_json(prompt, DestinationActivitiesResult)
+            activities = llm_result.get("data") or {}
 
-        if not isinstance(activities, dict) or not activities:
-            result = {
-                "message": "Activities info could not be parsed.",
-                "raw_text": llm_result.get("raw_text", ""),
-                "sources": [],
-                "grounding_queries": [],
-                "code": 502,
-            }
-            _log_tool_output("get_destination_activities", result)
-            return result
+            if not isinstance(activities, dict) or not activities:
+                result = {
+                    "message": "Activities info could not be parsed.",
+                    "raw_text": llm_result.get("raw_text", ""),
+                    "sources": [],
+                    "grounding_queries": [],
+                    "code": 502,
+                }
+                _log_tool_output("get_destination_activities", result)
+                return result
 
-        items = activities.get("top_activities") or []
-        if isinstance(items, list):
-            activities["top_activities"] = await _enrich_activities_with_images(destination, items[:4])
+            items = activities.get("top_activities") or []
+            if isinstance(items, list):
+                activities["top_activities"] = await _enrich_activities_with_images(destination, items[:4])
 
         result = {
             "destination": destination,
@@ -1093,8 +1167,7 @@ Requirements:
         return result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_visa_info(
     context: RunContext,  # type: ignore
     destination: str,
@@ -1140,7 +1213,12 @@ Requirements:
 - Do not mention that this is legal advice.
 """
 
-        llm_result = await _call_llm_json(prompt, VisaInfoResult)
+        _visa_fillers = [
+            f"Let me check visa requirements for {destination}.",
+            "Just a moment.",
+        ]
+        async with tool_filler_for(context, "get_destination_visa_info", _visa_fillers):
+            llm_result = await _call_llm_json(prompt, VisaInfoResult)
         visa = llm_result.get("data") or {}
 
         if not isinstance(visa, dict) or not visa:
@@ -1822,8 +1900,7 @@ async def _fetch_flights_raw(
 # FLIGHT SEARCH – TOOL
 # =============================================================================
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_destination_flights(
     context: RunContext,  # type: ignore
     trip: Annotated[str, "Flight type: must be exactly 'dom' for domestic flights (both cities in same country, e.g. India to India) or 'intl' for international flights (different countries)"],
@@ -1866,6 +1943,7 @@ async def get_destination_flights(
 
     try:
         # ── validate inputs ──────────────────────────────────────────────
+        _from_city_label, _to_city_label = from_city, to_city
         from_city = await _resolve_city_to_iata(from_city)
         to_city = await _resolve_city_to_iata(to_city)
         trip = _normalize_trip(trip)
@@ -1886,38 +1964,43 @@ async def get_destination_flights(
         child = max(int(child), 0)
         infant = max(int(infant), 0)
 
-        # ── classify preference ──────────────────────────────────────────
-        applog.info(f"Classifying flight preference for custom_input='{custom_input}'")
-        preference = await _classify_flight_preference(custom_input)
-        applog.info(f"Flight preference resolved: {preference}")
+        _flight_fillers = [
+            f"Let me check available flights from {_from_city_label} to {_to_city_label}.",
+            "Still searching for flights.",
+        ]
+        async with tool_filler_for(context, "get_destination_flights", _flight_fillers):
+            # ── classify preference ──────────────────────────────────────
+            applog.info(f"Classifying flight preference for custom_input='{custom_input}'")
+            preference = await _classify_flight_preference(custom_input)
+            applog.info(f"Flight preference resolved: {preference}")
 
-        # ── fetch token ──────────────────────────────────────────────────
-        applog.info("Fetching flight auth token …")
-        request_id, session_id, auth_cookies = await _fetch_flight_auth()
-        applog.info(f"Flight auth acquired: requestId={request_id}, cookies={len(auth_cookies)} keys")
+            # ── fetch token ────────────────────────────────────────────
+            applog.info("Fetching flight auth token …")
+            request_id, session_id, auth_cookies = await _fetch_flight_auth()
+            applog.info(f"Flight auth acquired: requestId={request_id}, cookies={len(auth_cookies)} keys")
 
-        # ── build request body ───────────────────────────────────────────
-        body: Dict[str, Any] = {
-            **FLIGHT_STATIC_BODY,
-            "trip": trip,
-            "adult": adult,
-            "child": child,
-            "infant": infant,
-            "fromCity": from_city.lower(),
-            "toCity": to_city,
-            "depart": _normalize_depart_date(depart),
-        }
+            # ── build request body ────────────────────────────────────
+            body: Dict[str, Any] = {
+                **FLIGHT_STATIC_BODY,
+                "trip": trip,
+                "adult": adult,
+                "child": child,
+                "infant": infant,
+                "fromCity": from_city.lower(),
+                "toCity": to_city,
+                "depart": _normalize_depart_date(depart),
+            }
 
-        # ── call flight search API ───────────────────────────────────────
-        applog.info(f"Searching flights: {from_city} → {to_city} on {depart}")
-        api_json = await _fetch_flights_raw(request_id, session_id, body, cookies=auth_cookies)
+            # ── call flight search API ────────────────────────────────
+            applog.info(f"Searching flights: {from_city} → {to_city} on {depart}")
+            api_json = await _fetch_flights_raw(request_id, session_id, body, cookies=auth_cookies)
 
-        # ── parse + sort ─────────────────────────────────────────────────
-        all_flights, meta = _extract_all_api_flights(api_json)
-        applog.info(f"Parsed {len(all_flights)} flights from API response")
+            # ── parse + sort ──────────────────────────────────────────
+            all_flights, meta = _extract_all_api_flights(api_json)
+            applog.info(f"Parsed {len(all_flights)} flights from API response")
 
-        sorted_flights = _sort_flights(all_flights, preference)
-        applog.info(f"Returning top {len(sorted_flights)} flights (sort_by={preference.get('sort_by')})")
+            sorted_flights = _sort_flights(all_flights, preference)
+            applog.info(f"Returning top {len(sorted_flights)} flights (sort_by={preference.get('sort_by')})")
 
         # ── structured return ────────────────────────────────────────────
         result: Dict[str, Any] = {
@@ -2105,8 +2188,7 @@ async def _enrich_itinerary_images(destination: str, days: List[Dict[str, Any]])
 # CUSTOM ITINERARY – TOOLS
 # =============================================================================
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def create_custom_itinerary(
     context: RunContext,  # type: ignore
     destination: Annotated[str, "Travel destination city/country (e.g. 'Goa', 'Dubai', 'Thailand')"],
@@ -2157,76 +2239,84 @@ async def create_custom_itinerary(
             _log_tool_output("create_custom_itinerary", result)
             return result
 
-        # ── Determine trip type ──────────────────────────────────────────
-        trip_type_prompt = f'Is travel from "{from_city_raw}" to "{destination}" domestic (same country) or international? Return JSON: {{"trip_type": "dom"}} or {{"trip_type": "intl"}}'
-        trip_type_result = await _call_llm_json(trip_type_prompt, TripTypeResult)
-        trip_type_data = trip_type_result.get("data") or {}
-        trip_type = trip_type_data.get("trip_type", "intl")
-        trip_type = _normalize_trip(trip_type)
+        _itin_fillers = [
+            f"Let me put together your itinerary for {destination} from {from_city_raw}, {start_date} to {end_date}.",
+            "Still lining up flights, hotels, and sightseeing for your trip.",
+            "Just finalizing your day-by-day plan now.",
+        ]
+        async with tool_filler_for(
+            context, "create_custom_itinerary", _itin_fillers, interval=5.5,
+        ):
+            # ── Determine trip type ──────────────────────────────────────────
+            trip_type_prompt = f'Is travel from "{from_city_raw}" to "{destination}" domestic (same country) or international? Return JSON: {{"trip_type": "dom"}} or {{"trip_type": "intl"}}'
+            trip_type_result = await _call_llm_json(trip_type_prompt, TripTypeResult)
+            trip_type_data = trip_type_result.get("data") or {}
+            trip_type = trip_type_data.get("trip_type", "intl")
+            trip_type = _normalize_trip(trip_type)
 
-        # ── Gather flight data (outbound + return) ───────────────────────
-        applog.info(f"Itinerary: Searching outbound flight {from_city_raw} → {destination} on {start_date}")
-        outbound_flight_data: Dict[str, Any] = {}
-        return_flight_data: Dict[str, Any] = {}
+            # ── Gather flight data (outbound + return) ───────────────────────
+            applog.info(f"Itinerary: Searching outbound flight {from_city_raw} → {destination} on {start_date}")
+            outbound_flight_data: Dict[str, Any] = {}
+            return_flight_data: Dict[str, Any] = {}
 
-        try:
-            from_iata = await _resolve_city_to_iata(from_city_raw)
-            to_iata = await _resolve_city_to_iata(destination)
+            try:
+                from_iata = await _resolve_city_to_iata(from_city_raw)
+                to_iata = await _resolve_city_to_iata(destination)
 
-            # Outbound flight
-            request_id, session_id, auth_cookies = await _fetch_flight_auth()
-            outbound_body: Dict[str, Any] = {
-                **FLIGHT_STATIC_BODY,
-                "trip": trip_type,
-                "adult": adults,
-                "child": children,
-                "infant": infants,
-                "fromCity": from_iata.lower(),
-                "toCity": to_iata,
-                "depart": _normalize_depart_date(start_date),
-            }
-            out_api = await _fetch_flights_raw(request_id, session_id, outbound_body, cookies=auth_cookies)
-            out_flights, _ = _extract_all_api_flights(out_api)
-            best_pref = {"require_non_stop": False, "sort_by": "best", "max_results": 1}
-            sorted_out = _sort_flights(out_flights, best_pref)
-            if sorted_out:
-                outbound_flight_data = sorted_out[0]
-            applog.info(f"Itinerary: Found {len(out_flights)} outbound flights")
+                # Outbound flight
+                request_id, session_id, auth_cookies = await _fetch_flight_auth()
+                outbound_body: Dict[str, Any] = {
+                    **FLIGHT_STATIC_BODY,
+                    "trip": trip_type,
+                    "adult": adults,
+                    "child": children,
+                    "infant": infants,
+                    "fromCity": from_iata.lower(),
+                    "toCity": to_iata,
+                    "depart": _normalize_depart_date(start_date),
+                }
+                out_api = await _fetch_flights_raw(request_id, session_id, outbound_body, cookies=auth_cookies)
+                out_flights, _ = _extract_all_api_flights(out_api)
+                best_pref = {"require_non_stop": False, "sort_by": "best", "max_results": 1}
+                sorted_out = _sort_flights(out_flights, best_pref)
+                if sorted_out:
+                    outbound_flight_data = sorted_out[0]
+                applog.info(f"Itinerary: Found {len(out_flights)} outbound flights")
 
-            # Return flight
-            request_id2, session_id2, auth_cookies2 = await _fetch_flight_auth()
-            return_body: Dict[str, Any] = {
-                **FLIGHT_STATIC_BODY,
-                "trip": trip_type,
-                "adult": adults,
-                "child": children,
-                "infant": infants,
-                "fromCity": to_iata.lower(),
-                "toCity": from_iata,
-                "depart": _normalize_depart_date(end_date),
-            }
-            ret_api = await _fetch_flights_raw(request_id2, session_id2, return_body, cookies=auth_cookies2)
-            ret_flights, _ = _extract_all_api_flights(ret_api)
-            sorted_ret = _sort_flights(ret_flights, best_pref)
-            if sorted_ret:
-                return_flight_data = sorted_ret[0]
-            applog.info(f"Itinerary: Found {len(ret_flights)} return flights")
-        except Exception:
-            applog.error(f"Itinerary flight search failed (non-fatal):\n{traceback.format_exc()}")
+                # Return flight
+                request_id2, session_id2, auth_cookies2 = await _fetch_flight_auth()
+                return_body: Dict[str, Any] = {
+                    **FLIGHT_STATIC_BODY,
+                    "trip": trip_type,
+                    "adult": adults,
+                    "child": children,
+                    "infant": infants,
+                    "fromCity": to_iata.lower(),
+                    "toCity": from_iata,
+                    "depart": _normalize_depart_date(end_date),
+                }
+                ret_api = await _fetch_flights_raw(request_id2, session_id2, return_body, cookies=auth_cookies2)
+                ret_flights, _ = _extract_all_api_flights(ret_api)
+                sorted_ret = _sort_flights(ret_flights, best_pref)
+                if sorted_ret:
+                    return_flight_data = sorted_ret[0]
+                applog.info(f"Itinerary: Found {len(ret_flights)} return flights")
+            except Exception:
+                applog.error(f"Itinerary flight search failed (non-fatal):\n{traceback.format_exc()}")
 
-        # ── Gather hotel data (3-star default) ───────────────────────────
-        hotel_query = custom_request if "hotel" in custom_request.lower() else "3 star"
-        applog.info(f"Itinerary: Searching hotels in {destination} ({hotel_query})")
-        hotels_list: List[Dict[str, Any]] = []
-        try:
-            hotels_list = await _search_hotels_with_places(destination, hotel_query, limit=3)
-        except Exception:
-            applog.error(f"Itinerary hotel search failed (non-fatal):\n{traceback.format_exc()}")
+            # ── Gather hotel data (3-star default) ───────────────────────────
+            hotel_query = custom_request if "hotel" in custom_request.lower() else "3 star"
+            applog.info(f"Itinerary: Searching hotels in {destination} ({hotel_query})")
+            hotels_list: List[Dict[str, Any]] = []
+            try:
+                hotels_list = await _search_hotels_with_places(destination, hotel_query, limit=3)
+            except Exception:
+                applog.error(f"Itinerary hotel search failed (non-fatal):\n{traceback.format_exc()}")
 
-        # ── Gather sightseeing data ──────────────────────────────────────
-        sightseeing_data: List[Dict[str, Any]] = []
-        try:
-            ss_prompt = f"""
+            # ── Gather sightseeing data ──────────────────────────────────────
+            sightseeing_data: List[Dict[str, Any]] = []
+            try:
+                ss_prompt = f"""
 You are a travel sightseeing assistant.
 Provide top 6 must-do sightseeing recommendations for {destination}.
 User preference: {custom_request if custom_request else "general"}
@@ -2237,16 +2327,16 @@ Requirements:
 - For each item include: name, description, ideal_duration, best_time_to_visit
 - Keep descriptions short.
 """
-            ss_result = await _call_llm_json(ss_prompt, DestinationSightseeingResult)
-            ss_data = ss_result.get("data") or {}
-            sightseeing_data = ss_data.get("top_sightseeing") or []
-        except Exception:
-            applog.error(f"Itinerary sightseeing fetch failed (non-fatal):\n{traceback.format_exc()}")
+                ss_result = await _call_llm_json(ss_prompt, DestinationSightseeingResult)
+                ss_data = ss_result.get("data") or {}
+                sightseeing_data = ss_data.get("top_sightseeing") or []
+            except Exception:
+                applog.error(f"Itinerary sightseeing fetch failed (non-fatal):\n{traceback.format_exc()}")
 
-        # ── Gather activities data ───────────────────────────────────────
-        activities_data: List[Dict[str, Any]] = []
-        try:
-            act_prompt = f"""
+            # ── Gather activities data ───────────────────────────────────────
+            activities_data: List[Dict[str, Any]] = []
+            try:
+                act_prompt = f"""
 You are a travel activities assistant.
 Provide top 6 must-do activities for {destination}.
 User preference: {custom_request if custom_request else "general"}
@@ -2257,26 +2347,26 @@ Requirements:
 - Each activity must include: name, description, category, ideal_duration
 - category must be one of: adventure, nature, culture, family, relaxation, nightlife, shopping, food, water, wildlife, romantic, seasonal, general
 """
-            act_result = await _call_llm_json(act_prompt, DestinationActivitiesResult)
-            act_data = act_result.get("data") or {}
-            activities_data = act_data.get("top_activities") or []
-        except Exception:
-            applog.error(f"Itinerary activities fetch failed (non-fatal):\n{traceback.format_exc()}")
+                act_result = await _call_llm_json(act_prompt, DestinationActivitiesResult)
+                act_data = act_result.get("data") or {}
+                activities_data = act_data.get("top_activities") or []
+            except Exception:
+                applog.error(f"Itinerary activities fetch failed (non-fatal):\n{traceback.format_exc()}")
 
-        # ── Build consolidated LLM prompt for day-wise itinerary ─────────
-        outbound_summary = ""
-        if outbound_flight_data:
-            outbound_summary = f"""Outbound Flight: {outbound_flight_data.get('airline_name', '')} {outbound_flight_data.get('flight_number', '')}, {outbound_flight_data.get('from_city', '')}→{outbound_flight_data.get('to_city', '')}, depart {outbound_flight_data.get('departure_time', '')}, arrive {outbound_flight_data.get('arrival_time', '')}, duration {outbound_flight_data.get('duration_text', '')}, price ₹{outbound_flight_data.get('price', '')}"""
+            # ── Build consolidated LLM prompt for day-wise itinerary ─────────
+            outbound_summary = ""
+            if outbound_flight_data:
+                outbound_summary = f"""Outbound Flight: {outbound_flight_data.get('airline_name', '')} {outbound_flight_data.get('flight_number', '')}, {outbound_flight_data.get('from_city', '')}→{outbound_flight_data.get('to_city', '')}, depart {outbound_flight_data.get('departure_time', '')}, arrive {outbound_flight_data.get('arrival_time', '')}, duration {outbound_flight_data.get('duration_text', '')}, price ₹{outbound_flight_data.get('price', '')}"""
 
-        return_summary = ""
-        if return_flight_data:
-            return_summary = f"""Return Flight: {return_flight_data.get('airline_name', '')} {return_flight_data.get('flight_number', '')}, {return_flight_data.get('from_city', '')}→{return_flight_data.get('to_city', '')}, depart {return_flight_data.get('departure_time', '')}, arrive {return_flight_data.get('arrival_time', '')}, duration {return_flight_data.get('duration_text', '')}, price ₹{return_flight_data.get('price', '')}"""
+            return_summary = ""
+            if return_flight_data:
+                return_summary = f"""Return Flight: {return_flight_data.get('airline_name', '')} {return_flight_data.get('flight_number', '')}, {return_flight_data.get('from_city', '')}→{return_flight_data.get('to_city', '')}, depart {return_flight_data.get('departure_time', '')}, arrive {return_flight_data.get('arrival_time', '')}, duration {return_flight_data.get('duration_text', '')}, price ₹{return_flight_data.get('price', '')}"""
 
-        hotels_summary = json.dumps(hotels_list[:3], ensure_ascii=False) if hotels_list else "No hotel data available, suggest good 3-star options."
-        sightseeing_summary = json.dumps(sightseeing_data[:6], ensure_ascii=False) if sightseeing_data else "Suggest top must-do sightseeing."
-        activities_summary = json.dumps(activities_data[:6], ensure_ascii=False) if activities_data else "Suggest top must-do activities."
+            hotels_summary = json.dumps(hotels_list[:3], ensure_ascii=False) if hotels_list else "No hotel data available, suggest good 3-star options."
+            sightseeing_summary = json.dumps(sightseeing_data[:6], ensure_ascii=False) if sightseeing_data else "Suggest top must-do sightseeing."
+            activities_summary = json.dumps(activities_data[:6], ensure_ascii=False) if activities_data else "Suggest top must-do activities."
 
-        itinerary_prompt = f"""
+            itinerary_prompt = f"""
 You are an expert travel itinerary planner. Create a detailed day-wise travel itinerary.
 
 Trip Details:
@@ -2317,74 +2407,74 @@ IMPORTANT RULES:
 Return the full CustomItineraryResult JSON.
 """
 
-        applog.info("Itinerary: Generating day-wise plan via LLM...")
-        llm_result = await _call_llm_json(itinerary_prompt, CustomItineraryResult)
-        itinerary = llm_result.get("data") or {}
+            applog.info("Itinerary: Generating day-wise plan via LLM...")
+            llm_result = await _call_llm_json(itinerary_prompt, CustomItineraryResult)
+            itinerary = llm_result.get("data") or {}
 
-        if not isinstance(itinerary, dict) or not itinerary:
-            result = {
-                "message": "Itinerary could not be generated.",
-                "raw_text": llm_result.get("raw_text", ""),
-                "code": 502,
-            }
-            _log_tool_output("create_custom_itinerary", result)
-            return result
+            if not isinstance(itinerary, dict) or not itinerary:
+                result = {
+                    "message": "Itinerary could not be generated.",
+                    "raw_text": llm_result.get("raw_text", ""),
+                    "code": 502,
+                }
+                _log_tool_output("create_custom_itinerary", result)
+                return result
 
-        # ── Inject real flight data into itinerary days ──────────────────
-        days = itinerary.get("days") or []
-        if days and outbound_flight_data:
-            first_day = days[0]
-            first_day["flight"] = {
-                "airline_name": outbound_flight_data.get("airline_name", ""),
-                "flight_number": outbound_flight_data.get("flight_number", ""),
-                "from_city": outbound_flight_data.get("from_city", ""),
-                "to_city": outbound_flight_data.get("to_city", ""),
-                "departure_time": outbound_flight_data.get("departure_time", ""),
-                "arrival_time": outbound_flight_data.get("arrival_time", ""),
-                "duration_text": outbound_flight_data.get("duration_text", ""),
-                "price": str(outbound_flight_data.get("price", "")),
-                "currency": "INR",
-                "stops_text": outbound_flight_data.get("stops_text", "Non-stop"),
-                "airline_logo_url": outbound_flight_data.get("airline_logo_url", ""),
-            }
+            # ── Inject real flight data into itinerary days ──────────────────
+            days = itinerary.get("days") or []
+            if days and outbound_flight_data:
+                first_day = days[0]
+                first_day["flight"] = {
+                    "airline_name": outbound_flight_data.get("airline_name", ""),
+                    "flight_number": outbound_flight_data.get("flight_number", ""),
+                    "from_city": outbound_flight_data.get("from_city", ""),
+                    "to_city": outbound_flight_data.get("to_city", ""),
+                    "departure_time": outbound_flight_data.get("departure_time", ""),
+                    "arrival_time": outbound_flight_data.get("arrival_time", ""),
+                    "duration_text": outbound_flight_data.get("duration_text", ""),
+                    "price": str(outbound_flight_data.get("price", "")),
+                    "currency": "INR",
+                    "stops_text": outbound_flight_data.get("stops_text", "Non-stop"),
+                    "airline_logo_url": outbound_flight_data.get("airline_logo_url", ""),
+                }
 
-        if days and return_flight_data:
-            last_day = days[-1]
-            last_day["flight"] = {
-                "airline_name": return_flight_data.get("airline_name", ""),
-                "flight_number": return_flight_data.get("flight_number", ""),
-                "from_city": return_flight_data.get("from_city", ""),
-                "to_city": return_flight_data.get("to_city", ""),
-                "departure_time": return_flight_data.get("departure_time", ""),
-                "arrival_time": return_flight_data.get("arrival_time", ""),
-                "duration_text": return_flight_data.get("duration_text", ""),
-                "price": str(return_flight_data.get("price", "")),
-                "currency": "INR",
-                "stops_text": return_flight_data.get("stops_text", "Non-stop"),
-                "airline_logo_url": return_flight_data.get("airline_logo_url", ""),
-            }
+            if days and return_flight_data:
+                last_day = days[-1]
+                last_day["flight"] = {
+                    "airline_name": return_flight_data.get("airline_name", ""),
+                    "flight_number": return_flight_data.get("flight_number", ""),
+                    "from_city": return_flight_data.get("from_city", ""),
+                    "to_city": return_flight_data.get("to_city", ""),
+                    "departure_time": return_flight_data.get("departure_time", ""),
+                    "arrival_time": return_flight_data.get("arrival_time", ""),
+                    "duration_text": return_flight_data.get("duration_text", ""),
+                    "price": str(return_flight_data.get("price", "")),
+                    "currency": "INR",
+                    "stops_text": return_flight_data.get("stops_text", "Non-stop"),
+                    "airline_logo_url": return_flight_data.get("airline_logo_url", ""),
+                }
 
-        # ── Inject real hotel data into days ─────────────────────────────
-        if days and hotels_list:
-            for i, day in enumerate(days):
-                if day.get("hotel") and not day["hotel"].get("image_url"):
-                    hotel_idx = i % len(hotels_list)
-                    real_hotel = hotels_list[hotel_idx]
-                    day["hotel"]["image_url"] = real_hotel.get("image_url", "")
-                    if not day["hotel"].get("address"):
-                        day["hotel"]["address"] = real_hotel.get("address", "")
+            # ── Inject real hotel data into days ─────────────────────────────
+            if days and hotels_list:
+                for i, day in enumerate(days):
+                    if day.get("hotel") and not day["hotel"].get("image_url"):
+                        hotel_idx = i % len(hotels_list)
+                        real_hotel = hotels_list[hotel_idx]
+                        day["hotel"]["image_url"] = real_hotel.get("image_url", "")
+                        if not day["hotel"].get("address"):
+                            day["hotel"]["address"] = real_hotel.get("address", "")
 
-        # ── Enrich images ────────────────────────────────────────────────
-        applog.info("Itinerary: Enriching images via Places API...")
-        try:
-            itinerary["days"] = await _enrich_itinerary_images(destination, days)
-        except Exception:
-            applog.error(f"Itinerary image enrichment failed (non-fatal):\n{traceback.format_exc()}")
+            # ── Enrich images ────────────────────────────────────────────────
+            applog.info("Itinerary: Enriching images via Places API...")
+            try:
+                itinerary["days"] = await _enrich_itinerary_images(destination, days)
+            except Exception:
+                applog.error(f"Itinerary image enrichment failed (non-fatal):\n{traceback.format_exc()}")
 
-        # ── Hero image ───────────────────────────────────────────────────
-        itinerary["hero_image_url"] = await _get_place_image_url(destination)
-        itinerary["from_city"] = from_city_raw
-        itinerary["trip_type"] = "domestic" if trip_type == "dom" else "international"
+            # ── Hero image ───────────────────────────────────────────────────
+            itinerary["hero_image_url"] = await _get_place_image_url(destination)
+            itinerary["from_city"] = from_city_raw
+            itinerary["trip_type"] = "domestic" if trip_type == "dom" else "international"
 
         result = {
             "itinerary_result": itinerary,
@@ -2400,8 +2490,7 @@ Return the full CustomItineraryResult JSON.
         return result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=30), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def update_custom_itinerary(
     context: RunContext,  # type: ignore
     existing_itinerary_json: Annotated[str, "The full existing itinerary as a JSON string (from the previous create_custom_itinerary or update_custom_itinerary result). Pass the complete itinerary_result object."],
@@ -2444,17 +2533,24 @@ async def update_custom_itinerary(
 
         destination = existing.get("destination", "")
 
-        # ── Check if hotel change is requested → search for new hotels ───
-        new_hotels_data = ""
-        if any(kw in change_request.lower() for kw in ["hotel", "stay", "accommodation", "resort", "5 star", "4 star", "luxury"]):
-            try:
-                new_hotels = await _search_hotels_with_places(destination, change_request, limit=3)
-                new_hotels_data = f"\nAvailable new hotels matching the request:\n{json.dumps(new_hotels, ensure_ascii=False)}"
-            except Exception:
-                applog.error(f"Update itinerary hotel search failed:\n{traceback.format_exc()}")
+        _update_fillers = [
+            f"Let me update your itinerary for {destination}.",
+            "Still working on that change.",
+        ]
+        async with tool_filler_for(
+            context, "update_custom_itinerary", _update_fillers, interval=4.5,
+        ):
+            # ── Check if hotel change is requested → search for new hotels ───
+            new_hotels_data = ""
+            if any(kw in change_request.lower() for kw in ["hotel", "stay", "accommodation", "resort", "5 star", "4 star", "luxury"]):
+                try:
+                    new_hotels = await _search_hotels_with_places(destination, change_request, limit=3)
+                    new_hotels_data = f"\nAvailable new hotels matching the request:\n{json.dumps(new_hotels, ensure_ascii=False)}"
+                except Exception:
+                    applog.error(f"Update itinerary hotel search failed:\n{traceback.format_exc()}")
 
-        # ── LLM prompt to update itinerary ───────────────────────────────
-        update_prompt = f"""
+            # ── LLM prompt to update itinerary ───────────────────────────────
+            update_prompt = f"""
 You are an expert travel itinerary planner. You need to update an existing itinerary.
 
 EXISTING ITINERARY (complete JSON):
@@ -2479,25 +2575,25 @@ CRITICAL RULES:
 Return the full updated itinerary JSON.
 """
 
-        applog.info(f"Update itinerary: Processing change request: {change_request}")
-        llm_result = await _call_llm_json(update_prompt, CustomItineraryResult)
-        updated = llm_result.get("data") or {}
+            applog.info(f"Update itinerary: Processing change request: {change_request}")
+            llm_result = await _call_llm_json(update_prompt, CustomItineraryResult)
+            updated = llm_result.get("data") or {}
 
-        if not isinstance(updated, dict) or not updated:
-            result = {
-                "message": "Updated itinerary could not be generated.",
-                "raw_text": llm_result.get("raw_text", ""),
-                "code": 502,
-            }
-            _log_tool_output("update_custom_itinerary", result)
-            return result
+            if not isinstance(updated, dict) or not updated:
+                result = {
+                    "message": "Updated itinerary could not be generated.",
+                    "raw_text": llm_result.get("raw_text", ""),
+                    "code": 502,
+                }
+                _log_tool_output("update_custom_itinerary", result)
+                return result
 
-        # ── Enrich any new images ────────────────────────────────────────
-        days = updated.get("days") or []
-        try:
-            updated["days"] = await _enrich_itinerary_images(destination, days)
-        except Exception:
-            applog.error(f"Update itinerary image enrichment failed:\n{traceback.format_exc()}")
+            # ── Enrich any new images ────────────────────────────────────────
+            days = updated.get("days") or []
+            try:
+                updated["days"] = await _enrich_itinerary_images(destination, days)
+            except Exception:
+                applog.error(f"Update itinerary image enrichment failed:\n{traceback.format_exc()}")
 
         # Preserve hero image if not changed
         if not updated.get("hero_image_url") and existing.get("hero_image_url"):

@@ -12,30 +12,21 @@ print(f"[ENV] Loaded .env_{APP_ENV}")
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8000")
 ENABLE_SPEECH_TUNING = os.environ.get("ENABLE_SPEECH_TUNING", "true").lower() == "true"
-# fast_aggressive for the opening stretch of the call (the classifier has no
-# per-caller evidence yet for the first `window` turns — see
-# attach_speech_tuner's window=5 below) rather than the previously neutral
-# slow_steady: a snappy, low-latency first impression matters more during
-# those first few turns than avoiding the occasional false split on a fast
-# talker's breathing pause, which the classifier corrects within 5 turns
-# anyway. Set SPEECH_PROFILE=slow_steady (or another CATEGORY_CONFIGS key)
-# to override.
-SPEECH_PROFILE = os.environ.get("SPEECH_PROFILE", "fast_aggressive")
-# The semantic turn detector releases clearly complete turns at min_delay.
-# max_delay is only the patience budget for uncertain, incomplete turns —
-# sourced per-profile from CATEGORY_CONFIGS below (same as min_delay)
-# rather than one global figure, since how long an "uncertain" turn is
-# worth waiting out differs by caller (a fast talker's uncertain turn isn't
-# worth the same patience as a hesitant one's).
+# Start with the patient policy until the caller has supplied enough evidence
+# for a responsive policy. This deliberately biases the first few turns
+# against cutting off callers who pause to think. Existing profile names such
+# as fast_aggressive and micro_pauses remain accepted as aliases.
+SPEECH_PROFILE = os.environ.get("SPEECH_PROFILE", "patient")
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io, TurnHandlingOptions, inference
 from livekit.plugins import google, silero, deepgram, sarvam
 from google.genai.types import HttpOptions, ThinkingConfig
-from speech_tuner import attach_speech_tuner, CATEGORY_CONFIGS
+from speech_tuner import attach_speech_tuner, CATEGORY_CONFIGS, resolve_profile
 from interruption_guard import InterruptionGuard, attach_interruption_guard
+from stt_flush import FlushableDeepgramSTT, attach_stt_flush
 from turn_logger import TurnLatencyTracker, attach_turn_logger
-from silence_filler import FillerRegistry, attach_silence_filler
+from tool_filler import FillerRegistry
 from tools import (
     get_travel_package,
     get_all_bogo_packages,
@@ -67,6 +58,7 @@ class Assistant(agents.Agent):
         self.interruption_guard: InterruptionGuard | None = None
         self.turn_logger: TurnLatencyTracker | None = None
         self.filler_registry: FillerRegistry | None = None
+        self.session_label: str = "session"
 
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Capture generated text so posture is available during playback."""
@@ -127,12 +119,12 @@ class Assistant(agents.Agent):
         frame_count = 0
         started = False
         first_frame_seen = False
-        # A silence-filler line ("Just a moment.") is a separate SpeechHandle
-        # spoken while the real reply is still being generated — it goes
+        # A tool filler line ("Let me check the pricing...") is a separate
+        # SpeechHandle spoken while a tool call is still running — it goes
         # through this same tts_node override and flips agent_state to
         # "speaking" just like a real reply would. Checking it against the
         # filler registry here is what keeps that from being logged/tracked
-        # as if the real response had started (see silence_filler.py).
+        # as if the real response had started (see tool_filler.py).
         is_filler = (
             self.filler_registry is not None
             and self.filler_registry.is_filler(self.session.current_speech)
@@ -143,19 +135,8 @@ class Assistant(agents.Agent):
             async for chunk in text:
                 if not started:
                     started = True
-                    applog.info(f"[TTS] synthesis starting filler={is_filler}")
                     if self.turn_logger is not None and not is_filler:
                         self.turn_logger.on_tts_start()
-                    if not is_filler and self.filler_registry is not None:
-                        # A real reply's synthesis has begun — end the
-                        # silence filler's "thinking" dwell window now
-                        # instead of waiting for agent_state_changed to
-                        # report "speaking" (which only happens once audio
-                        # is actually forwarded, a further TTS-TTFB delay
-                        # away). Otherwise a filler can still fire in that
-                        # gap, talking over or needlessly preceding a reply
-                        # that was already on its way.
-                        self.filler_registry.notify_real_tts_start()
                 chars_in += len(chunk)
                 yield chunk
 
@@ -170,9 +151,6 @@ class Assistant(agents.Agent):
                         self.turn_logger.on_tts_first_audio()
                 yield frame
         except asyncio.CancelledError:
-            applog.info(
-                f"[TTS] synthesis cancelled filler={is_filler} chars_in={chars_in} frames_out={frame_count}"
-            )
             if self.turn_logger is not None and not is_filler:
                 self.turn_logger.on_tts_cancelled(chars_in)
             raise
@@ -183,13 +161,9 @@ class Assistant(agents.Agent):
             raise
         else:
             if started:
-                applog.info(
-                    f"[TTS] synthesis complete filler={is_filler} chars_in={chars_in} frames_out={frame_count}"
-                )
                 if self.turn_logger is not None and not is_filler:
                     self.turn_logger.on_tts_complete(chars_in)
             else:
-                applog.info("[TTS] synthesis node ran with no input text")
                 if self.turn_logger is not None and not is_filler:
                     self.turn_logger.on_tts_no_output()
 
@@ -220,22 +194,13 @@ class Assistant(agents.Agent):
         if self.turn_logger is not None:
             self.turn_logger.start_turn(text)
         if self.interruption_guard.is_non_answer_for_current_posture(text):
-            applog.info(
-                f"[ASSISTANT] suppressing non-answer filler as LLM turn: text={text!r}"
-            )
             if self.turn_logger is not None:
                 self.turn_logger.suppress_turn("non_answer_filler")
             raise agents.StopResponse()
         if self.interruption_guard.is_redundant_turn(text):
-            applog.info(
-                f"[ASSISTANT] suppressing redundant turn as LLM turn: text={text!r}"
-            )
             if self.turn_logger is not None:
                 self.turn_logger.suppress_turn("redundant_turn")
             raise agents.StopResponse()
-        applog.info(
-            f"[ASSISTANT] user turn accepted as LLM turn: text={text!r}"
-        )
 
 
 server = AgentServer()
@@ -276,39 +241,44 @@ async def my_agent(ctx: agents.JobContext):
     # ────────────────────────────────────────────────
     #               Session Configuration
     # ────────────────────────────────────────────────
-    # Every call starts on SPEECH_PROFILE (fast_aggressive by default — see
-    # its definition above) for the first `window` turns, since the
-    # classifier has no per-caller evidence yet at that point. Note
-    # fast_aggressive's STT endpointing is pinned to the shared 200ms floor
-    # (_MIN_STT_ENDPOINTING_MS in speech_tuner.py), not the more aggressive
-    # 125ms once used here — that lower value was a direct contributor to
-    # false interruptions/turn splits on ordinary breathing pauses, so it's
-    # held at 200ms across every profile until STT/interruption stability
-    # improves. Adapts to the caller's actual pattern every five turns after
-    # that. Set ENABLE_SPEECH_TUNING=false only when a fixed profile is required.
-    profile_name = SPEECH_PROFILE if SPEECH_PROFILE in CATEGORY_CONFIGS else "slow_steady"
+    # Every call starts on the patient policy while the classifier gathers
+    # evidence. It adapts to the caller every five completed turns, with
+    # hysteresis before switching and an immediate patient override when the
+    # current endpointing ceiling is repeatedly reached. Set
+    # ENABLE_SPEECH_TUNING=false to keep the selected startup policy fixed.
+    profile_name = resolve_profile(SPEECH_PROFILE)
     _default_profile = CATEGORY_CONFIGS[profile_name]
+    vad_params = {
+        "activation_threshold": 0.55,
+        "min_silence_duration": _default_profile["vad"]["min_silence_duration"],
+        "min_speech_duration": 0.15,
+        "prefix_padding_duration": 0.15,
+        "sample_rate": 16000,
+    }
     applog.info(
-        f"[SPEECH CONFIG] profile={profile_name} adaptive_tuning={ENABLE_SPEECH_TUNING}"
+        f"[VAD CONFIG] profile={profile_name} adaptive_tuning={ENABLE_SPEECH_TUNING} "
+        f"vad(activation_threshold={vad_params['activation_threshold']} "
+        f"min_silence_duration={vad_params['min_silence_duration']}s "
+        f"min_speech_duration={vad_params['min_speech_duration']}s "
+        f"prefix_padding_duration={vad_params['prefix_padding_duration']}s) "
+        f"stt(endpointing_ms={_default_profile['stt']['endpointing_ms']} "
+        f"no_delay={_default_profile['stt']['no_delay']}) "
+        f"tts(pace={_default_profile['tts']['pace']}) "
+        f"endpointing(min_delay={_default_profile['endpointing']['min_delay']}s "
+        f"max_delay={_default_profile['endpointing']['max_delay']}s "
+        f"alpha={_default_profile['endpointing']['alpha']}) "
+        f"preemptive_generation={_default_profile['preemptive_generation']['enabled']}"
+    )
+    # Subclass that lets attach_stt_flush() force a final at end of speech.
+    stt_engine = FlushableDeepgramSTT(
+        model="nova-2",
+        language="hi",
+        endpointing_ms=_default_profile["stt"]["endpointing_ms"],
+        interim_results=_default_profile["stt"]["interim_results"],
+        no_delay=_default_profile["stt"]["no_delay"],
     )
     session = AgentSession(
-        stt=deepgram.STT(
-            # Pinned to nova-2 (the free tier on this account) rather than
-            # nova-3. Tradeoff worth knowing about: Deepgram's own docs are
-            # explicit that real-time code-switching between Hindi and
-            # English is a nova-3 capability — nova-2 in fixed-language mode
-            # has no code-switch handling, so an English word/name/number
-            # embedded in a Hindi sentence ("mujhe Delhi se Mumbai jaana
-            # hai") can still be mis-transcribed. There's no free-tier
-            # workaround for that on nova-2; language="hi" is still the
-            # right setting for it (language="multi" is a nova-3 feature,
-            # not confirmed to do real code-switching on nova-2).
-            model="nova-2",
-            language="hi",
-            endpointing_ms=_default_profile["stt"]["endpointing_ms"],
-            interim_results=_default_profile["stt"]["interim_results"],
-            no_delay=_default_profile["stt"]["no_delay"],
-        ),
+        stt=stt_engine,
         llm=google.LLM(
             model="gemini-3.5-flash-lite",
             vertexai=False,
@@ -330,32 +300,21 @@ async def my_agent(ctx: agents.JobContext):
                 "mode": "dynamic",
                 "min_delay": _default_profile["endpointing"]["min_delay"],
                 "max_delay": _default_profile["endpointing"]["max_delay"],
+                "alpha": _default_profile["endpointing"]["alpha"],
             },
             interruption={
-                # The semantic guard is the single interruption owner. Native
-                # interruption cannot be cancelled by an IGNORE decision after
-                # the transcript event, so disable that competing path. Forced
-                # guard interruptions still work and STT keeps listening.
                 "enabled": False,
                 "discard_audio_if_uninterruptible": False,
                 "false_interruption_timeout": None,
                 "resume_false_interruption": False,
             },
-            preemptive_generation={
-                # Final-turn filler and redundancy checks must run before any LLM work.
-                # Disable speculative generation so a draft cannot survive or be reused
-                # after on_user_turn_completed vetoes the finalized transcript.
-                "enabled": False,
-                "preemptive_tts": False,
-            },
+            # Per-profile: on for responsive callers, off for patient ones
+            # (see CATEGORY_CONFIGS; the speech tuner flips it on profile switch).
+            preemptive_generation=dict(_default_profile["preemptive_generation"]),
         ),
         vad=silero.VAD.load(
-            activation_threshold=0.55,
-            min_silence_duration=0.4,
-            min_speech_duration=0.15,
-            prefix_padding_duration=0.15,
-            sample_rate=16000,
             force_cpu=True,
+            **vad_params,
         ),
         tools=[
             get_travel_package, 
@@ -558,21 +517,39 @@ async def my_agent(ctx: agents.JobContext):
     # Adaptive classification and tuning are enabled by default. Each five-turn
     # window can move the live session to the matching speech profile.
     # ────────────────────────────────────────────────
-    interruption_guard = attach_interruption_guard(session, session_label=customer_id)
-    if ENABLE_SPEECH_TUNING:
-        attach_speech_tuner(
-            session, session_label=customer_id, initial_profile=profile_name, interruption_guard=interruption_guard
-        )
+    # filler registry is attached before the guard so the guard can tell
+    # whether whatever it's about to interrupt is a filler line rather
+    # than the real assistant reply (see InterruptionGuard._interrupting_filler).
+    # Fillers themselves are now spoken at tool-call level (see tool_filler.py);
+    # this registry just tracks which SpeechHandles were filler lines.
+    filler_registry = FillerRegistry()
+    interruption_guard = attach_interruption_guard(
+        session, session_label=customer_id, filler_registry=filler_registry
+    )
+    attach_stt_flush(session, stt_engine, session_label=customer_id)
     assistant = Assistant(full_instructions=full_instructions)
     assistant.interruption_guard = interruption_guard
-    assistant.filler_registry = attach_silence_filler(session, session_label=customer_id)
+    assistant.filler_registry = filler_registry
+    assistant.session_label = customer_id
     assistant.turn_logger = attach_turn_logger(
         session,
         session_label=customer_id,
         interruption_guard=interruption_guard,
         filler_registry=assistant.filler_registry,
+        vad_threshold=vad_params["activation_threshold"],
+        vad_min_silence=vad_params["min_silence_duration"],
+        default_min_delay=_default_profile["endpointing"]["min_delay"],
+        default_max_delay=_default_profile["endpointing"]["max_delay"],
     )
     turn_logger_holder["tracker"] = assistant.turn_logger
+    if ENABLE_SPEECH_TUNING:
+        attach_speech_tuner(
+            session,
+            session_label=customer_id,
+            initial_profile=profile_name,
+            interruption_guard=interruption_guard,
+            turn_logger=assistant.turn_logger,
+        )
 
     # ────────────────────────────────────────────────
     #               Start the session
@@ -604,6 +581,18 @@ async def my_agent(ctx: agents.JobContext):
         )
 
 
+def _prewarm(proc: agents.JobProcess) -> None:
+    # Loads the semantic-check embedding model once, in the worker's
+    # prewarm phase, before any job's event loop exists. Left to lazy-load
+    # on a job's first real barge-in instead, the multi-second synchronous
+    # model load blocks that job's event loop, which stalls the in-flight
+    # Deepgram/LLM connections at the same moment (they show up as an
+    # unrelated-looking Deepgram disconnect + LLM CancelledError).
+    from semantic_check import warm_model
+
+    warm_model()
+
+
 if __name__ == "__main__":
     from livekit.agents import WorkerOptions
 
@@ -614,6 +603,11 @@ if __name__ == "__main__":
     agents.cli.run_app(
         WorkerOptions(
             entrypoint_fnc=my_agent,
+            prewarm_fnc=_prewarm,
+            # Default is 10s; _prewarm's embedding-model load alone takes
+            # ~12s on this box (torch import + HF hub check), so the
+            # supervisor kills every job process mid-init.
+            initialize_process_timeout=60.0,
             agent_name=os.environ.get("AGENT_NAME", ""),
             port=int(os.environ.get("AGENT_PORT", 8081))
         )

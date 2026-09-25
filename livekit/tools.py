@@ -6,6 +6,7 @@ from fastapi import HTTPException, status
 from typing import Any, Optional, Dict, List
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_random_exponential,
 )
@@ -14,10 +15,11 @@ import re
 from dateutil import parser
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from livekit.agents import function_tool, RunContext
+from livekit.agents import RunContext
 import os
 from app_logger import applog
 import chat_history as _ch_module  # lazy reference to avoid circular import
+from tool_filler import tool_filler_for, safe_function_tool
 import asyncio
 
 elastic_search_url_live_packages = "https://travbridge.atirath.com/v1/livepackages"
@@ -45,6 +47,52 @@ def _to_int_safe(val: Any, default: int = 0) -> int:
         return int(val) if val not in (None, "", False) else default
     except (ValueError, TypeError):
         return default
+
+
+class UpstreamParseError(Exception):
+    """The upstream response body couldn't be read as JSON at all (or the
+    request itself failed to reach the server) — a transport/parsing
+    failure, not a real answer from the API.
+
+    Deliberately NOT raised for a non-200 status that carries a valid JSON
+    body: several of these tools use specific status codes to carry real
+    business answers (e.g. get_travel_package's 401 = "no packages this
+    month", 402 = "bad departure city") and retrying those would just add
+    latency before returning the exact same answer. Only "I couldn't even
+    parse what came back" counts as retryable here.
+    """
+
+
+@retry(
+    wait=wait_random_exponential(multiplier=1, max=40),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((UpstreamParseError, httpx.TransportError)),
+    reraise=True,
+)
+async def fetch_json_with_retry(context: RunContext, tool_name: str, fillers: list, send):
+    """Run `send()` (an async no-arg callable that performs one httpx call and
+    returns the Response), retrying up to 3x with jittered backoff on a
+    connection/transport failure or a body that isn't valid JSON. Each
+    attempt re-enters tool_filler_for, so a slow retry still speaks a
+    filler line instead of going silent.
+
+    Retries happen entirely inside this one tool invocation — the LLM never
+    sees an intermediate state, only a final parsed response or (once
+    retries are exhausted) an UpstreamParseError it should catch and turn
+    into its own error dict, exactly as it did before this call existed.
+
+    Returns (response, response_data) so the caller keeps its own existing
+    status-code handling untouched.
+    """
+    async with tool_filler_for(context, tool_name, fillers):
+        response = await send()
+    try:
+        response_data = response.json()
+    except Exception:
+        applog.error(f"[{tool_name}] non-JSON response: {response.text[:500]}")
+        raise UpstreamParseError("Upstream service error. Please try again.")
+    return response, response_data
+
 
 def _extract_pricing_highlights(data: Any) -> Dict[str, Any]:
     """
@@ -295,8 +343,7 @@ def build_package_summaries(result: Any) -> List[str]:
 
 # ---------- tool ----------
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=40), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_travel_package(
     context: RunContext,  # type: ignore
     destination: str,                 # <-- make optional
@@ -371,99 +418,105 @@ async def get_travel_package(
         headers = {"Content-Type": "application/json"}
         applog.info(f"Payload: {payload}")
 
-        async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
-            response = await client.post(
-                elastic_search_url_live_packages, json=payload, headers=headers
+        _dest_phrase = f"to {destination}" + (f" from {hub}" if hub else "")
+        _pkg_fillers = [
+            f"Let me check available packages {_dest_phrase}.",
+            "Still pulling up the best matches for you.",
+        ]
+
+        async def _send():
+            async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
+                return await client.post(
+                    elastic_search_url_live_packages, json=payload, headers=headers
+                )
+
+        try:
+            response, response_data = await fetch_json_with_retry(
+                context, "get_travel_package", _pkg_fillers, _send
             )
+            applog.info(f"Response Data: {response_data}")
+        except UpstreamParseError as e:
+            return {"message": str(e), "code": 502}
 
-            # Protect against non-JSON or huge error responses
+        message = response_data.get("message", PACKAGES_NOT_FOUND)
 
-            try:
-                response_data = response.json()
-                applog.info(f"Response Data: {response_data}")
-            except Exception:
-                applog.error(f"Non-JSON response: {response.text[:500]}")
-                return {"message": "Upstream service error. Please try again.", "code": 502}
+        if response.status_code == 200:
+            applog.info("✅ API call successful.")
+            result = response_data.get("body", [])
 
-            message = response_data.get("message", PACKAGES_NOT_FOUND)
+            # Count GIT and FIT packages from API response
+            git_count = 0
+            fit_count = 0
+            for package in (result or []):
+                itinerary_data = package.get("itinerary_data") or {}
+                pkg_subtype = itinerary_data.get("pkgSubtypeName", "").upper()
+                if "GIT" in pkg_subtype:
+                    git_count += 1
+                if "FIT" in pkg_subtype:
+                    fit_count += 1
 
-            if response.status_code == 200:
-                applog.info("✅ API call successful.")
-                result = response_data.get("body", [])
+            # Log package counts from API
+            total_packages = len(result or [])
+            applog.info(f"📦 Total packages returned from API: {total_packages}")
+            applog.info(f"👥 GIT packages: {git_count}")
+            applog.info(f"🏖️ FIT packages: {fit_count}")
 
-                # Count GIT and FIT packages from API response
-                git_count = 0
-                fit_count = 0
-                for package in (result or []):
-                    itinerary_data = package.get("itinerary_data") or {}
-                    pkg_subtype = itinerary_data.get("pkgSubtypeName", "").upper()
-                    if "GIT" in pkg_subtype:
-                        git_count += 1
-                    if "FIT" in pkg_subtype:
-                        fit_count += 1
+            # Filter packages based on user's requested package_type
+            filtered_packages = []
+            requested_types = pkgSubtypeName.split(",")  # Get the types user requested
 
-                # Log package counts from API
-                total_packages = len(result or [])
-                applog.info(f"📦 Total packages returned from API: {total_packages}")
-                applog.info(f"👥 GIT packages: {git_count}")
-                applog.info(f"🏖️ FIT packages: {fit_count}")
+            for package in (result or []):
+                itinerary_data = package.get("itinerary_data") or {}
+                pkg_subtype = itinerary_data.get("pkgSubtypeName", "").upper()
 
-                # Filter packages based on user's requested package_type
-                filtered_packages = []
-                requested_types = pkgSubtypeName.split(",")  # Get the types user requested
+                # Check if package matches any of the requested types
+                should_include = False
+                for req_type in requested_types:
+                    if req_type.strip() in pkg_subtype:
+                        should_include = True
+                        break
 
-                for package in (result or []):
-                    itinerary_data = package.get("itinerary_data") or {}
-                    pkg_subtype = itinerary_data.get("pkgSubtypeName", "").upper()
+                if should_include:
+                    filtered_packages.append(package)
 
-                    # Check if package matches any of the requested types
-                    should_include = False
-                    for req_type in requested_types:
-                        if req_type.strip() in pkg_subtype:
-                            should_include = True
-                            break
+            applog.info(f"🔍 Filtered packages based on request ({pkgSubtypeName}): {len(filtered_packages)}")
 
-                    if should_include:
-                        filtered_packages.append(package)
-
-                applog.info(f"🔍 Filtered packages based on request ({pkgSubtypeName}): {len(filtered_packages)}")
-
-                packages_titles = build_package_summaries(filtered_packages)
-                # Build card_data and store in module-level var for data channel
-                # (NOT in tool return — keeps IPC payload small)
-                global _latest_card_data
-                _latest_card_data = _build_card_data(filtered_packages, limit=6)
-                applog.info(f"Button Message List: {packages_titles}")
-                _result = {
-                    "packages": packages_titles,
-                    "count": len(packages_titles),
-                    "destination": destination,
-                    "month": month_of_travel,
-                }
-                if ch:
-                    ch.add_function_call_output("get_travel_package", json.dumps(_result))
-                return _result
-
-
-            if response.status_code == 401:
-                # month-specific error
-                return {
-                    "message": f"Note: {ERROR_MESSAGE_FOR_MONTH}\n{message}",
-                    "code": 401,
-                }
-
-            if response.status_code == 402:
-                # base city-specific error
-                return {
-                    "message": f"Note: {ERROR_MESSAGE_FOR_BASE_CITY}{message}",
-                    "code": 402,
-                }
-
-            # generic not found/other
-            return {
-                "message": f"Note: {PACKAGES_NOT_FOUND}\n{message}",
-                "code": status.HTTP_404_NOT_FOUND,
+            packages_titles = build_package_summaries(filtered_packages)
+            # Build card_data and store in module-level var for data channel
+            # (NOT in tool return — keeps IPC payload small)
+            global _latest_card_data
+            _latest_card_data = _build_card_data(filtered_packages, limit=6)
+            applog.info(f"Button Message List: {packages_titles}")
+            _result = {
+                "packages": packages_titles,
+                "count": len(packages_titles),
+                "destination": destination,
+                "month": month_of_travel,
             }
+            if ch:
+                ch.add_function_call_output("get_travel_package", json.dumps(_result))
+            return _result
+
+
+        if response.status_code == 401:
+            # month-specific error
+            return {
+                "message": f"Note: {ERROR_MESSAGE_FOR_MONTH}\n{message}",
+                "code": 401,
+            }
+
+        if response.status_code == 402:
+            # base city-specific error
+            return {
+                "message": f"Note: {ERROR_MESSAGE_FOR_BASE_CITY}{message}",
+                "code": 402,
+            }
+
+        # generic not found/other
+        return {
+            "message": f"Note: {PACKAGES_NOT_FOUND}\n{message}",
+            "code": status.HTTP_404_NOT_FOUND,
+        }
 
     except HTTPException as e:
         applog.error(f"HTTPException: {e}")
@@ -479,8 +532,7 @@ async def get_travel_package(
         return _err_result
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=40), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_all_bogo_packages(
     context: RunContext,  # type: ignore
 ) -> Dict[str, Any]:
@@ -495,62 +547,66 @@ async def get_all_bogo_packages(
     try:
         applog.info("get_all_bogo_packages called")
 
-        async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
-            response = await client.get(bogo_packages_url)
+        async def _send():
+            async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
+                return await client.get(bogo_packages_url)
 
-            try:
-                response_data = response.json()
-                applog.info(f"BOGO API Response: {response_data}")
-            except Exception:
-                applog.error(f"Non-JSON response from BOGO API: {response.text[:500]}")
-                return {"message": "Failed to fetch BOGO packages. Please try again.", "code": 502}
+        try:
+            response, response_data = await fetch_json_with_retry(
+                context, "get_all_bogo_packages",
+                ["Let me pull up our BOGO deals.", "Still gathering those offers."],
+                _send,
+            )
+            applog.info(f"BOGO API Response: {response_data}")
+        except UpstreamParseError as e:
+            return {"message": str(e), "code": 502}
 
-            if response.status_code == 200:
-                applog.info("✅ BOGO API call successful.")
-                packages_data = response_data if isinstance(response_data, list) else []
+        if response.status_code == 200:
+            applog.info("✅ BOGO API call successful.")
+            packages_data = response_data if isinstance(response_data, list) else []
 
-                if not packages_data:
-                    return {
-                        "message": "No BOGO packages available at the moment.",
-                        "code": 404,
-                    }
-
-                # Build formatted string from package data
-                bogo_packages_list = []
-                for package in packages_data:
-                    itinerary_data = package.get("itinerary_data", {})
-
-                    package_name = _sanitize(itinerary_data.get("packageName", "Unknown Package"))
-                    days = itinerary_data.get("days", "N/A")
-                    price = itinerary_data.get("price", "N/A")
-
-                    # Create formatted string for each package
-                    package_info = f"Package: {package_name}, Duration: {days} days, Price: {price} rupees"
-                    bogo_packages_list.append(package_info)
-
-                # Join all packages into a single string
-                bogo_packages_string = " | ".join(bogo_packages_list)
-
-                applog.info(f"BOGO Packages String: {bogo_packages_string}")
-
-                # Store card_data for frontend data channel
-                global _latest_card_data
-                _latest_card_data = _build_card_data(packages_data, limit=6)
-
-                _bogo_result = {
-                    "packages": bogo_packages_string,
-                    "count": len(bogo_packages_list),
-                    "message": "Successfully retrieved BOGO packages.",
-                }
-                if ch:
-                    ch.add_function_call_output("get_all_bogo_packages", json.dumps(_bogo_result))
-                return _bogo_result
-            else:
-                applog.error(f"BOGO API returned status code: {response.status_code}")
+            if not packages_data:
                 return {
-                    "message": "Failed to fetch BOGO packages. Please try again.",
-                    "code": response.status_code,
+                    "message": "No BOGO packages available at the moment.",
+                    "code": 404,
                 }
+
+            # Build formatted string from package data
+            bogo_packages_list = []
+            for package in packages_data:
+                itinerary_data = package.get("itinerary_data", {})
+
+                package_name = _sanitize(itinerary_data.get("packageName", "Unknown Package"))
+                days = itinerary_data.get("days", "N/A")
+                price = itinerary_data.get("price", "N/A")
+
+                # Create formatted string for each package
+                package_info = f"Package: {package_name}, Duration: {days} days, Price: {price} rupees"
+                bogo_packages_list.append(package_info)
+
+            # Join all packages into a single string
+            bogo_packages_string = " | ".join(bogo_packages_list)
+
+            applog.info(f"BOGO Packages String: {bogo_packages_string}")
+
+            # Store card_data for frontend data channel
+            global _latest_card_data
+            _latest_card_data = _build_card_data(packages_data, limit=6)
+
+            _bogo_result = {
+                "packages": bogo_packages_string,
+                "count": len(bogo_packages_list),
+                "message": "Successfully retrieved BOGO packages.",
+            }
+            if ch:
+                ch.add_function_call_output("get_all_bogo_packages", json.dumps(_bogo_result))
+            return _bogo_result
+        else:
+            applog.error(f"BOGO API returned status code: {response.status_code}")
+            return {
+                "message": "Failed to fetch BOGO packages. Please try again.",
+                "code": response.status_code,
+            }
 
     except HTTPException as e:
         applog.error(f"HTTPException in get_all_bogo_packages: {e}")
@@ -731,8 +787,7 @@ def _build_git_calendar_summary(fare_calendar: dict) -> tuple[str, dict]:
 
 # ---------- fare calendar tool ----------
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=40), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_fare_calendar(
     context: RunContext,  # type: ignore
     package_id: str,
@@ -765,91 +820,99 @@ async def get_fare_calendar(
         headers = {"Content-Type": "application/json"}
         applog.info(f"Fare calendar payload: {payload}")
 
-        async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
-            response = await client.post(fare_calendar_url, json=payload, headers=headers)
+        _fc_fillers = [
+            f"Let me check available dates for that package from {departure_city}.",
+            "Still checking the calendar.",
+        ]
 
-            try:
-                response_data = response.json()
-                applog.info(f"Fare calendar response: {response_data}")
-            except Exception:
-                applog.error(f"Non-JSON fare calendar response: {response.text[:500]}")
-                return {"message": "Upstream service error. Please try again.", "code": 502}
+        async def _send():
+            async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
+                return await client.post(fare_calendar_url, json=payload, headers=headers)
 
-            if response.status_code != 200:
-                msg = response_data.get("message", "No availability found for this package.")
-                return {"message": msg, "code": response.status_code}
+        try:
+            response, response_data = await fetch_json_with_retry(
+                context, "get_fare_calendar", _fc_fillers, _send
+            )
+            applog.info(f"Fare calendar response: {response_data}")
+        except UpstreamParseError as e:
+            return {"message": str(e), "code": 502}
 
-            # The API returns the package data directly, not wrapped in a "body" array
-            itinerary_data = response_data.get("itinerary_data") or {}
-            fare_calendar = response_data.get("fareCalendar") or {}
+        if response.status_code != 200:
+            msg = response_data.get("message", "No availability found for this package.")
+            return {"message": msg, "code": response.status_code}
 
-            # ── Fallback: if fareCalendar is null, retry with "Joining Direct" ──
-            # Some packages only support "Joining Direct" (customer joins at destination).
-            if not fare_calendar and departure_city.strip().lower() != "joining direct":
-                applog.info(f"[FARE_CAL] fareCalendar is null for '{departure_city}', retrying with 'Joining Direct'")
-                jd_payload = {
-                    "packageId": package_id.strip(),
-                    "departureCity": "Joining Direct",
-                    "fareCalendar": True,
-                }
-                jd_response = await client.post(fare_calendar_url, json=jd_payload, headers=headers)
-                try:
-                    jd_data = jd_response.json()
-                except Exception:
-                    jd_data = {}
-                if jd_response.status_code == 200 and jd_data.get("fareCalendar"):
-                    applog.info("[FARE_CAL] 'Joining Direct' fallback succeeded")
-                    response_data = jd_data
-                    itinerary_data = response_data.get("itinerary_data") or {}
-                    fare_calendar = response_data.get("fareCalendar") or {}
-                    departure_city = "Joining Direct"
+        # The API returns the package data directly, not wrapped in a "body" array
+        itinerary_data = response_data.get("itinerary_data") or {}
+        fare_calendar = response_data.get("fareCalendar") or {}
 
-            if not itinerary_data:
-                return {"message": "No availability found for this package.", "code": 404}
-
-            package_name = _sanitize(itinerary_data.get("packageName") or package_id)
-            pkg_subtype = (itinerary_data.get("pkgSubtypeName") or "FIT").upper()
-            days = itinerary_data.get("days", "")
-            available_months = itinerary_data.get("availableMonths") or []
-
-            # Build calendar summary based on package type
-            if "GIT" in pkg_subtype:
-                calendar_summary, all_dates_by_class = _build_git_calendar_summary(fare_calendar)
-            else:
-                calendar_summary, all_dates_by_class = _build_fit_calendar_summary(fare_calendar)
-
-            # Format available months for voice
-            months_text = ""
-            if available_months:
-                readable_months = [m.replace("_", " ").title() for m in available_months]
-                months_text = "Available months: " + ", ".join(readable_months) + "."
-
-            # Format all dates for LLM reference (convert to voice-friendly format)
-            all_dates_formatted = {}
-            for class_name, date_list in all_dates_by_class.items():
-                # Convert all dates to readable format
-                all_dates_formatted[class_name] = [_fmt_date_voice(d) for d in date_list]
-
-            # Build a complete dates reference string
-            dates_reference = ""
-            if all_dates_formatted:
-                for class_name, dates in all_dates_formatted.items():
-                    dates_reference += f"{class_name} - Complete list of ALL {len(dates)} bookable dates: {', '.join(dates)}. "
-
-            result = {
-                "packageId": package_id,
-                "packageName": package_name,
-                "packageType": pkg_subtype,
-                "days": days,
-                "departureCity": departure_city,
-                "availableMonths": months_text,
-                "calendarSummary": calendar_summary,
-                "allBookableDates": dates_reference.strip(),
+        # ── Fallback: if fareCalendar is null, retry with "Joining Direct" ──
+        # Some packages only support "Joining Direct" (customer joins at destination).
+        if not fare_calendar and departure_city.strip().lower() != "joining direct":
+            applog.info(f"[FARE_CAL] fareCalendar is null for '{departure_city}', retrying with 'Joining Direct'")
+            jd_payload = {
+                "packageId": package_id.strip(),
+                "departureCity": "Joining Direct",
+                "fareCalendar": True,
             }
-            applog.info(f"Fare calendar result: {result}")
-            if ch:
-                ch.add_function_call_output("get_fare_calendar", json.dumps(result))
-            return result
+            async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
+                jd_response = await client.post(fare_calendar_url, json=jd_payload, headers=headers)
+            try:
+                jd_data = jd_response.json()
+            except Exception:
+                jd_data = {}
+            if jd_response.status_code == 200 and jd_data.get("fareCalendar"):
+                applog.info("[FARE_CAL] 'Joining Direct' fallback succeeded")
+                response_data = jd_data
+                itinerary_data = response_data.get("itinerary_data") or {}
+                fare_calendar = response_data.get("fareCalendar") or {}
+                departure_city = "Joining Direct"
+
+        if not itinerary_data:
+            return {"message": "No availability found for this package.", "code": 404}
+
+        package_name = _sanitize(itinerary_data.get("packageName") or package_id)
+        pkg_subtype = (itinerary_data.get("pkgSubtypeName") or "FIT").upper()
+        days = itinerary_data.get("days", "")
+        available_months = itinerary_data.get("availableMonths") or []
+
+        # Build calendar summary based on package type
+        if "GIT" in pkg_subtype:
+            calendar_summary, all_dates_by_class = _build_git_calendar_summary(fare_calendar)
+        else:
+            calendar_summary, all_dates_by_class = _build_fit_calendar_summary(fare_calendar)
+
+        # Format available months for voice
+        months_text = ""
+        if available_months:
+            readable_months = [m.replace("_", " ").title() for m in available_months]
+            months_text = "Available months: " + ", ".join(readable_months) + "."
+
+        # Format all dates for LLM reference (convert to voice-friendly format)
+        all_dates_formatted = {}
+        for class_name, date_list in all_dates_by_class.items():
+            # Convert all dates to readable format
+            all_dates_formatted[class_name] = [_fmt_date_voice(d) for d in date_list]
+
+        # Build a complete dates reference string
+        dates_reference = ""
+        if all_dates_formatted:
+            for class_name, dates in all_dates_formatted.items():
+                dates_reference += f"{class_name} - Complete list of ALL {len(dates)} bookable dates: {', '.join(dates)}. "
+
+        result = {
+            "packageId": package_id,
+            "packageName": package_name,
+            "packageType": pkg_subtype,
+            "days": days,
+            "departureCity": departure_city,
+            "availableMonths": months_text,
+            "calendarSummary": calendar_summary,
+            "allBookableDates": dates_reference.strip(),
+        }
+        applog.info(f"Fare calendar result: {result}")
+        if ch:
+            ch.add_function_call_output("get_fare_calendar", json.dumps(result))
+        return result
 
     except HTTPException as e:
         applog.error(f"HTTPException in get_fare_calendar: {e}")
@@ -859,8 +922,7 @@ async def get_fare_calendar(
         return {"message": "Unexpected error. Please try again.", "code": 500}
 
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=40), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def get_package_pricing(
     context: RunContext,  # type: ignore
     pkg_id: str,
@@ -944,88 +1006,95 @@ async def get_package_pricing(
         headers = {"Content-Type": "application/json"}
         applog.info(f"Package pricing payload: {payload}")
 
-        async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
-            response = await client.post(package_pricing_url, json=payload, headers=headers)
+        _pricing_fillers = [
+            f"Let me work out the pricing for {departure_date} departing from {hub_city}.",
+            "Still calculating the total for you.",
+        ]
 
-            try:
-                response_data = response.json()
-                applog.info(f"Package pricing response: {response_data}")
-            except Exception:
-                applog.error(f"Non-JSON package pricing response: {response.text[:500]}")
-                _non_json_result = {"message": "Upstream pricing service error. Please try again.", "code": 502}
-                if ch:
-                    ch.add_function_call_output("get_package_pricing", json.dumps(_non_json_result))
-                return _non_json_result
+        async def _send():
+            async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
+                return await client.post(package_pricing_url, json=payload, headers=headers)
 
-            if response.status_code != 200:
-                message = (
-                    response_data.get("message")
-                    if isinstance(response_data, dict)
-                    else "Failed to fetch package pricing."
-                )
-                _error_result = {
-                    "message": message or "Failed to fetch package pricing.",
-                    "code": response.status_code,
-                }
-                if ch:
-                    ch.add_function_call_output("get_package_pricing", json.dumps(_error_result))
-                return _error_result
+        try:
+            response, response_data = await fetch_json_with_retry(
+                context, "get_package_pricing", _pricing_fillers, _send
+            )
+            applog.info(f"Package pricing response: {response_data}")
+        except UpstreamParseError as e:
+            _error_result = {"message": str(e), "code": 502}
+            if ch:
+                ch.add_function_call_output("get_package_pricing", json.dumps(_error_result))
+            return _error_result
 
-            pricing_body = response_data.get("body", response_data) if isinstance(response_data, dict) else response_data
-
-            # ── Create a minimal pricing details object for the UI to prevent payload size limits ──
-            if isinstance(pricing_body, dict):
-                source = pricing_body.get("data") if isinstance(pricing_body.get("data"), dict) else pricing_body
-                
-                # Extract flights from flightOptions
-                flight_options = source.get("flightOptions", {})
-                extracted_flights = []
-                if flight_options:
-                    for direction in ["onward", "return"]:
-                        if direction in flight_options:
-                            opts = flight_options[direction].get("options", [])
-                            if opts:
-                                best_opt = next((o for o in opts if o.get("recommended")), opts[0])
-                                extracted_flights.append({
-                                    "flightNo": best_opt.get("flightNumber"),
-                                    "airline": best_opt.get("airlineName"),
-                                    "departureCity": best_opt.get("departure", {}).get("cityName"),
-                                    "arrivalCity": best_opt.get("arrival", {}).get("cityName"),
-                                    "duration": best_opt.get("duration"),
-                                    "direction": direction
-                                })
-
-                mini_pricing_details = {
-                    "totalPrice": source.get("totalPrice"),
-                    "netPrice": source.get("netPrice"),
-                    "grossPrice": source.get("grossPrice"),
-                    "totalTax": source.get("totalTax"),
-                    "totalDiscount": source.get("totalDiscount"),
-                    "currencySummary": source.get("currencySummary"),
-                    "rooms": source.get("rooms"),
-                    "flights": extracted_flights if extracted_flights else source.get("flights"),
-                }
-                mini_pricing_details = {k: v for k, v in mini_pricing_details.items() if v is not None}
-            else:
-                mini_pricing_details = pricing_body
-
-            result = {
-                "message": (
-                    response_data.get("message", "Pricing fetched successfully.")
-                    if isinstance(response_data, dict)
-                    else "Pricing fetched successfully."
-                ),
-                "pkg_id": payload["pkg_id"],
-                "departure_date": payload["departure_date"],
-                "hub_city": payload["hub_city"],
-                "pricing_summary": _extract_pricing_highlights(pricing_body),
-                "pricing_details": mini_pricing_details,
-                "is_flight_enabled": payload["is_flight_enabled"],
-                "code": 200,
+        if response.status_code != 200:
+            message = (
+                response_data.get("message")
+                if isinstance(response_data, dict)
+                else "Failed to fetch package pricing."
+            )
+            _error_result = {
+                "message": message or "Failed to fetch package pricing.",
+                "code": response.status_code,
             }
             if ch:
-                ch.add_function_call_output("get_package_pricing", json.dumps(result))
-            return result
+                ch.add_function_call_output("get_package_pricing", json.dumps(_error_result))
+            return _error_result
+
+        pricing_body = response_data.get("body", response_data) if isinstance(response_data, dict) else response_data
+
+        # ── Create a minimal pricing details object for the UI to prevent payload size limits ──
+        if isinstance(pricing_body, dict):
+            source = pricing_body.get("data") if isinstance(pricing_body.get("data"), dict) else pricing_body
+
+            # Extract flights from flightOptions
+            flight_options = source.get("flightOptions", {})
+            extracted_flights = []
+            if flight_options:
+                for direction in ["onward", "return"]:
+                    if direction in flight_options:
+                        opts = flight_options[direction].get("options", [])
+                        if opts:
+                            best_opt = next((o for o in opts if o.get("recommended")), opts[0])
+                            extracted_flights.append({
+                                "flightNo": best_opt.get("flightNumber"),
+                                "airline": best_opt.get("airlineName"),
+                                "departureCity": best_opt.get("departure", {}).get("cityName"),
+                                "arrivalCity": best_opt.get("arrival", {}).get("cityName"),
+                                "duration": best_opt.get("duration"),
+                                "direction": direction
+                            })
+
+            mini_pricing_details = {
+                "totalPrice": source.get("totalPrice"),
+                "netPrice": source.get("netPrice"),
+                "grossPrice": source.get("grossPrice"),
+                "totalTax": source.get("totalTax"),
+                "totalDiscount": source.get("totalDiscount"),
+                "currencySummary": source.get("currencySummary"),
+                "rooms": source.get("rooms"),
+                "flights": extracted_flights if extracted_flights else source.get("flights"),
+            }
+            mini_pricing_details = {k: v for k, v in mini_pricing_details.items() if v is not None}
+        else:
+            mini_pricing_details = pricing_body
+
+        result = {
+            "message": (
+                response_data.get("message", "Pricing fetched successfully.")
+                if isinstance(response_data, dict)
+                else "Pricing fetched successfully."
+            ),
+            "pkg_id": payload["pkg_id"],
+            "departure_date": payload["departure_date"],
+            "hub_city": payload["hub_city"],
+            "pricing_summary": _extract_pricing_highlights(pricing_body),
+            "pricing_details": mini_pricing_details,
+            "is_flight_enabled": payload["is_flight_enabled"],
+            "code": 200,
+        }
+        if ch:
+            ch.add_function_call_output("get_package_pricing", json.dumps(result))
+        return result
 
     except HTTPException as e:
         applog.error(f"HTTPException in get_package_pricing: {e}")
@@ -1043,8 +1112,7 @@ async def get_package_pricing(
 
 # ---------- search packages by name tool ----------
 
-@function_tool()
-@retry(wait=wait_random_exponential(multiplier=1, max=40), stop=stop_after_attempt(3))
+@safe_function_tool()
 async def search_packages_by_name(
     context: RunContext,  # type: ignore
     package_name: str,
@@ -1075,57 +1143,61 @@ async def search_packages_by_name(
         headers = {"Content-Type": "application/json"}
         applog.info(f"Search packages by name payload: {payload}")
 
-        async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
-            response = await client.post(
-                search_packages_by_name_url, json=payload, headers=headers
+        async def _send():
+            async with httpx.AsyncClient(timeout=CUSTOM_HTTP_TIMEOUT) as client:
+                return await client.post(
+                    search_packages_by_name_url, json=payload, headers=headers
+                )
+
+        try:
+            response, response_data = await fetch_json_with_retry(
+                context, "search_packages_by_name",
+                [f"Let me search for {package_name} packages.", "Still searching."],
+                _send,
             )
+            applog.info(f"Search packages by name response: {response_data}")
+        except UpstreamParseError as e:
+            return {"message": str(e), "code": 502}
 
-            try:
-                response_data = response.json()
-                applog.info(f"Search packages by name response: {response_data}")
-            except Exception:
-                applog.error(f"Non-JSON response: {response.text[:500]}")
-                return {"message": "Upstream service error. Please try again.", "code": 502}
+        if response.status_code == 200:
+            applog.info("✅ Search packages by name API call successful.")
+            result = []
+            if isinstance(response_data, list):
+                # New API returns a raw list of {id, itinerary_data, score, ...}
+                result = response_data
+            elif isinstance(response_data, dict):
+                result = response_data.get("body") or response_data.get("data") or []
 
-            if response.status_code == 200:
-                applog.info("✅ Search packages by name API call successful.")
-                result = []
-                if isinstance(response_data, list):
-                    # New API returns a raw list of {id, itinerary_data, score, ...}
-                    result = response_data
-                elif isinstance(response_data, dict):
-                    result = response_data.get("body") or response_data.get("data") or []
-
-                if not result:
-                    return {
-                        "message": f"No packages found matching '{package_name}'.",
-                        "code": 404,
-                    }
-
-                # Build package summaries using the existing helper function
-                packages_titles = build_package_summaries(result)
-                applog.info(f"Search results: {len(packages_titles)} packages found")
-
-                # Store card_data for frontend data channel
-                global _latest_card_data
-                _latest_card_data = _build_card_data(result, limit=6)
-
-                _result = {
-                    "packages": packages_titles,
-                    "count": len(packages_titles),
-                    "search_term": package_name,
-                    "message": f"Found {len(packages_titles)} packages matching '{package_name}'.",
-                }
-                if ch:
-                    ch.add_function_call_output("search_packages_by_name", json.dumps(_result))
-                return _result
-            else:
-                message = response_data.get("message", "No packages found.")
-                applog.error(f"API returned status code: {response.status_code}")
+            if not result:
                 return {
-                    "message": message,
-                    "code": response.status_code,
+                    "message": f"No packages found matching '{package_name}'.",
+                    "code": 404,
                 }
+
+            # Build package summaries using the existing helper function
+            packages_titles = build_package_summaries(result)
+            applog.info(f"Search results: {len(packages_titles)} packages found")
+
+            # Store card_data for frontend data channel
+            global _latest_card_data
+            _latest_card_data = _build_card_data(result, limit=6)
+
+            _result = {
+                "packages": packages_titles,
+                "count": len(packages_titles),
+                "search_term": package_name,
+                "message": f"Found {len(packages_titles)} packages matching '{package_name}'.",
+            }
+            if ch:
+                ch.add_function_call_output("search_packages_by_name", json.dumps(_result))
+            return _result
+        else:
+            message = response_data.get("message", "No packages found.")
+            applog.error(f"API returned status code: {response.status_code}")
+            return {
+                "message": message,
+                "code": response.status_code,
+            }
 
     except HTTPException as e:
         applog.error(f"HTTPException in search_packages_by_name: {e}")
