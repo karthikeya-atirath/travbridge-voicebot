@@ -114,8 +114,12 @@ REACTION_TOKENS = frozenset({
     "great", "cool", "nice", "awesome", "perfect", "good",
     "oh", "ohh", "oho", "wow", "arre",
     "acha", "achha", "accha",
+    # "hello" is almost always a presence check (a call-audio delay, the
+    # bot still thinking), not a request to stop it — treat it as filler.
+    "hello", "hallo", "helo", "hullo",
 
     "अच्छा", "अरे", "ओह", "वाह",
+    "हेलो", "हैलो", "हलो",
 })
 
 
@@ -267,13 +271,13 @@ COMMAND_PREFIX_FILLERS: Final[frozenset[str]] = frozenset(
 # _stable() wants 2+ words), which is exactly what made "hello" wait for the
 # STT final. The vocabulary is tiny and unambiguous, which is what makes
 # trusting one interim word safe here — the same reasoning as
-# IMMEDIATE_COMMANDS. Deliberately kept apart from ACKNOWLEDGEMENTS:
-# "hello" answers no question and must never be stripped as filler.
+# IMMEDIATE_COMMANDS. "hello" and its spellings are not here: they live in
+# REACTION_TOKENS as filler (see there).
 ATTENTION_TOKENS: Final[frozenset[str]] = frozenset(
     {
-        "hello", "hallo", "helo", "hullo", "hi", "hey", "oi",
+        "hi", "hey", "oi",
         "suno", "sorry", "pardon",
-        "हेलो", "हैलो", "हलो", "सुनो", "सुनिए",
+        "सुनो", "सुनिए",
     }
 )
 
@@ -1082,14 +1086,14 @@ class InterruptionGuard:
             return False
         return True
 
-    def _resume_playback_after_false_interruption(self) -> None:
+    def _resume_playback_after_false_interruption(self, reason: str = "redundant_speech") -> None:
         if not self._resume_playback():
             return
         applog.info(
             f"[INTERRUPT GUARD][{self.session_label}] resumed playback: candidate interruption "
-            "was redundant speech, not a real interruption"
+            f"was not a real interruption ({reason})"
         )
-        self._notify("false_interruption", {"resumed": True, "reason": "redundant_speech"})
+        self._notify("false_interruption", {"resumed": True, "reason": reason})
 
     def _report_filler(self, text: str, kind: str, verdict: str, *, notify: bool = True) -> dict:
         """Record how a finalized filler was routed. Fillers never reach the
@@ -1410,26 +1414,24 @@ class InterruptionGuard:
             )
         redundant = analysis is not None and analysis.delta is TurnDelta.REDUNDANT
         active = self.semantic_analyzer.active_turn
-        # Recovered turns never pass through Agent.on_user_turn_completed, so
-        # this is the only way turn_logger learns they existed.
-        self._notify(
-            "recovery",
-            {
-                "text": text,
-                "action": "suppressed" if (non_answer or redundant) else "regenerated",
-                "suppress_reason": (
-                    "non_answer_filler" if non_answer else "redundant_turn" if redundant else None
-                ),
-                "posture": self.state.posture.value,
-                "expected_user_speech": EXPECTED_USER_SPEECH[self.state.posture],
-                "user_filler": filler_kind(normalize_text(text)),
-                "delta": analysis.delta.value if analysis else "skipped",
-                "reason": analysis.reason if analysis else "filler_rule",
-                "similarity": analysis.similarity if analysis else None,
-                "compared_with": active.text if analysis and active else None,
-            },
-        )
+        recovery_info = {
+            "text": text,
+            "action": "suppressed" if (non_answer or redundant) else "regenerated",
+            "suppress_reason": (
+                "non_answer_filler" if non_answer else "redundant_turn" if redundant else None
+            ),
+            "posture": self.state.posture.value,
+            "expected_user_speech": EXPECTED_USER_SPEECH[self.state.posture],
+            "user_filler": filler_kind(normalize_text(text)),
+            "delta": analysis.delta.value if analysis else "skipped",
+            "reason": analysis.reason if analysis else "filler_rule",
+            "similarity": analysis.similarity if analysis else None,
+            "compared_with": active.text if analysis and active else None,
+        }
         if non_answer or redundant:
+            # Recovered turns never pass through Agent.on_user_turn_completed,
+            # so this is the only way turn_logger learns they existed.
+            self._notify("recovery", recovery_info)
             # Matches the live overlap path's pause -> check -> resume
             # architecture instead of silently dropping the text: whatever
             # the bot was already saying is what should keep playing, so
@@ -1442,6 +1444,10 @@ class InterruptionGuard:
             self._resume_playback_after_false_interruption()
             return
         self._last_recovered_text = text
+        self._notify("recovery", recovery_info)
+        self._regenerate_recovered_turn(text)
+
+    def _regenerate_recovered_turn(self, text: str) -> None:
         applog.info(
             f"[INTERRUPT GUARD][{self.session_label}] recovering dropped turn: text={text!r}"
         )
@@ -1454,13 +1460,24 @@ class InterruptionGuard:
         # real one, back to back. Force-interrupt again here, against
         # whatever is actually current *now*, so the recovered reply
         # replaces it instead of trailing it.
+        self._resume_playback()
         try:
             self.session.interrupt(force=True)
         except RuntimeError as exc:
             applog.warning(
                 f"[INTERRUPT GUARD][{self.session_label}] recovery interrupt not applied: {exc}"
             )
-        self.session.generate_reply(user_input=text)
+        # The reply generated below is a new overlap window. generate_reply()
+        # usually moves the agent straight into thinking/speaking without an
+        # idle/listening transition in between, so on_agent_state_changed
+        # never resets the interrupt latch — left set, the guard silently
+        # ignores every barge-in on that next reply (see interrupt_fired).
+        self._reset_timer()
+        self.state.interrupt_fired = False
+        speech = self.session.generate_reply(user_input=text)
+        # Lets turn_logger attribute this reply's LLM/TTS timings to the
+        # recovered turn rather than to the reply it replaced.
+        self._notify("recovery_speech", {"speech": speech})
 
     def set_assistant_text(self, text: str, *, source: str) -> None:
         if not text.strip():
@@ -1739,32 +1756,30 @@ class InterruptionGuard:
             f"user_filler={filler_kind(text) or 'none'} "
             f"interrupting_filler={interrupting_filler} transcript={raw_text!r}"
         )
-        self._notify(
-            "decision",
-            {
-                "decision": decision.value,
-                "reason": reason,
-                "is_final": is_final,
-                "speech_duration": speech_duration,
-                "posture": self.state.posture.value,
-                "turn_delta": turn_delta.value if turn_delta else None,
-                "drop_risk": drop_risk,
-                "decision_time": decision_time,
-                "semantic_check_time": semantic_check_time,
-                "paused_for_check": paused_for_semantic_check,
-                "interrupted_filler": interrupting_filler,
-                "expected_user_speech": EXPECTED_USER_SPEECH[self.state.posture],
-                "user_filler": filler_kind(text),
-                "transcript": raw_text,
-                "similarity": analysis.similarity if analysis else None,
-                "semantic_reason": analysis.reason if analysis else None,
-                "compared_with": (
-                    self.semantic_analyzer.active_turn.text
-                    if analysis and self.semantic_analyzer.active_turn
-                    else None
-                ),
-            },
-        )
+        decision_info = {
+            "decision": decision.value,
+            "reason": reason,
+            "is_final": is_final,
+            "speech_duration": speech_duration,
+            "posture": self.state.posture.value,
+            "turn_delta": turn_delta.value if turn_delta else None,
+            "drop_risk": drop_risk,
+            "decision_time": decision_time,
+            "semantic_check_time": semantic_check_time,
+            "paused_for_check": paused_for_semantic_check,
+            "interrupted_filler": interrupting_filler,
+            "expected_user_speech": EXPECTED_USER_SPEECH[self.state.posture],
+            "user_filler": filler_kind(text),
+            "transcript": raw_text,
+            "similarity": analysis.similarity if analysis else None,
+            "semantic_reason": analysis.reason if analysis else None,
+            "compared_with": (
+                self.semantic_analyzer.active_turn.text
+                if analysis and self.semantic_analyzer.active_turn
+                else None
+            ),
+        }
+        self._notify("decision", decision_info)
         if decision is InterruptDecision.INTERRUPT:
             self._interrupt(reason, interrupting_filler=interrupting_filler)
 

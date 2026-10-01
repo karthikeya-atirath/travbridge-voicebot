@@ -3,7 +3,7 @@
 Each completed turn is rendered as one compact block. Only sections that
 apply to the turn are printed:
 
-    USER -> SPEECH TUNING -> DYNAMIC ENDPOINTING -> SEMANTIC CHECK
+    USER -> SPEECH TUNING -> ENDPOINTING (incl. end-of-turn model) -> SEMANTIC CHECK
          -> INTERRUPTION GUARD -> FILLER -> LLM -> TTS -> LATENCY
 
 Sections that explain a decision (tuning, endpointing, semantic check, guard,
@@ -181,17 +181,7 @@ class _Turn:
     t_user_speech_end: float | None = None
 
     t_llm_start: float | None = None
-    # True when t_llm_start was claimed from a preemptive-generation call
-    # that fired before this turn committed (see _claim_pending_llm_start),
-    # rather than a live on_llm_start() call made while this turn was
-    # already current. A later live call is still allowed to overwrite it —
-    # see on_llm_start.
-    t_llm_start_provisional: bool = False
     t_llm_first_token: float | None = None
-    # Same provisional/override contract as t_llm_start_provisional, but for
-    # the first token — a preemptive generation can produce its first token
-    # before this turn even committed. See _claim_pending_llm_first_token.
-    t_llm_first_token_provisional: bool = False
     t_llm_complete: float | None = None
     tool_calls: dict[str, dict] = field(default_factory=dict)
 
@@ -200,6 +190,13 @@ class _Turn:
     t_tts_complete: float | None = None
     t_playback_start: float | None = None
     t_playback_end: float | None = None
+
+    # SpeechHandle id of the reply generation that answers this turn. LLM/TTS
+    # events are routed by this id, not by "whichever turn is current", so a
+    # generation that is cancelled or finishes after a newer turn opened still
+    # lands on its own turn.
+    speech_id: str | None = None
+    flushed: bool = False
 
     reply_cancelled: bool = False
     suppressed: str | None = None
@@ -245,6 +242,20 @@ class _Turn:
 
     fillers: list[dict] = field(default_factory=list)
 
+    # Audio end-of-turn model (smart_turn.py): last prediction before commit,
+    # and how many predictions this turn took (>1 = the caller paused, the
+    # model said "incomplete", and they resumed).
+    eot_prediction: dict | None = None
+    eot_predictions: int = 0
+    # Seconds between this turn committing and the caller speaking again,
+    # when that happened within PREMATURE_EOT_WINDOW (likely cut off).
+    resumed_after_commit: float | None = None
+
+
+# Caller speech starting this soon after a commit suggests the turn was
+# committed while they were still mid-thought.
+PREMATURE_EOT_WINDOW = 2.0
+
 
 class TurnLatencyTracker:
     """Collect lifecycle signals and emit one readable block per turn."""
@@ -271,20 +282,36 @@ class TurnLatencyTracker:
 
         # Latest guard decision not yet claimed by a turn (see module docstring).
         self._pending_guard: dict | None = None
-        # Recovered turn waiting for its LLM start to open its block.
-        self._pending_recovery: dict | None = None
-        # on_llm_start() timestamp from a preemptive-generation call that
-        # fired before any turn was current, not yet claimed by start_turn().
-        self._pending_llm_start: float | None = None
-        # Same, for on_llm_first_token() — a preemptive generation can reach
-        # its first token before the turn it belongs to has committed.
-        self._pending_llm_first_token: float | None = None
+        # Reply generations, keyed by SpeechHandle id. _by_speech holds the
+        # turn each generation answers (kept after the turn prints, so late
+        # events from a cancelled generation are dropped instead of landing
+        # on a newer turn). _pending_speech holds timings of generations no
+        # turn owns yet — preemptive generation starts the LLM (and TTS) on
+        # an interim transcript before the turn commits; the turn claims them
+        # once the framework reports which SpeechHandle answers it.
+        self._by_speech: dict[str, _Turn] = {}
+        self._pending_speech: dict[str, _Turn] = {}
+        self._watched_speech: set[str] = set()
+        self._done_speech: dict[str, float] = {}
+        # Turn whose reply audio is playing right now.
+        self._playing: _Turn | None = None
+        # Name of the audio end-of-turn model, and its predictions not yet
+        # claimed by a turn (predictions land before the turn opens).
+        self.turn_detector_name: str | None = None
+        self._pending_eot: dict | None = None
+        self._pending_eot_count = 0
 
     # ---- turn intake ----
     def start_turn(self, stt_text: str, event_type: str = "user_turn") -> None:
-        if self._current is not None:
-            self._current.note = "superseded by a newer turn before it finished"
-            self._flush()
+        prev = self._current
+        if prev is not None:
+            prev.note = "superseded by a newer turn before it finished"
+            if prev.speech_id is not None and prev.speech_id not in self._done_speech:
+                # Its reply is still in flight: keep collecting that reply's
+                # timings and print the block when it ends (see _on_speech_done).
+                self._current = None
+            else:
+                self._flush()
         self._index += 1
         self._current = _Turn(
             index=self._index,
@@ -293,30 +320,24 @@ class TurnLatencyTracker:
             t_stt_final=_now(),
         )
         self._claim_pending_guard(self._current)
-        self._claim_pending_llm_start(self._current)
-        self._claim_pending_llm_first_token(self._current)
+        self._claim_pending_eot(self._current)
 
-    def _claim_pending_llm_start(self, rec: _Turn) -> None:
-        pending, self._pending_llm_start = self._pending_llm_start, None
-        if pending is None:
-            return
-        # Guard against attaching a stale dispatch to an unrelated later
-        # turn — e.g. the session's opening generate_reply(), or a
-        # preemptive attempt that was cancelled and never led to a commit.
-        # Same age budget _claim_pending_guard uses for the same reason.
-        if _now() - pending > _GUARD_INTERRUPT_MAX_AGE:
-            return
-        rec.t_llm_start = pending
-        rec.t_llm_start_provisional = True
+    # ---- end-of-turn model ----
+    def record_eot_prediction(self, info: dict) -> None:
+        self._pending_eot = info
+        self._pending_eot_count += 1
 
-    def _claim_pending_llm_first_token(self, rec: _Turn) -> None:
-        pending, self._pending_llm_first_token = self._pending_llm_first_token, None
-        if pending is None:
+    def _claim_pending_eot(self, rec: _Turn) -> None:
+        rec.eot_prediction, self._pending_eot = self._pending_eot, None
+        rec.eot_predictions, self._pending_eot_count = self._pending_eot_count, 0
+
+    def on_user_speech_started(self) -> None:
+        rec = self._current
+        if rec is None or rec.event_type != "user_turn" or rec.resumed_after_commit is not None:
             return
-        if _now() - pending > _GUARD_INTERRUPT_MAX_AGE:
-            return
-        rec.t_llm_first_token = pending
-        rec.t_llm_first_token_provisional = True
+        gap = _now() - rec.t_stt_final
+        if gap <= PREMATURE_EOT_WINDOW:
+            rec.resumed_after_commit = gap
 
     def _claim_pending_guard(self, rec: _Turn) -> None:
         pending, self._pending_guard = self._pending_guard, None
@@ -380,6 +401,7 @@ class TurnLatencyTracker:
         end_of_utterance_delay: float,
         transcription_delay: float,
         on_user_turn_completed_delay: float,
+        speech_id: str | None = None,
     ) -> None:
         if self._current is None:
             return
@@ -390,6 +412,82 @@ class TurnLatencyTracker:
         self._current.transcription_delay = round(transcription_delay, 3)
         self._current.eou_delay = round(end_of_utterance_delay, 3)
         self._current.hook_delay = round(on_user_turn_completed_delay, 3)
+        if speech_id:
+            # The SpeechHandle the framework chose to answer this turn — a
+            # reused preemptive generation or a fresh one.
+            self._bind(self._current, speech_id)
+
+    # ---- reply generation routing ----
+    def bind_speech(self, speech) -> None:
+        """Attach a SpeechHandle created for the current turn (a direct
+        session.say(), or a recovered turn's generate_reply())."""
+        if self._current is not None and speech is not None:
+            self._watch(speech)
+            self._bind(self._current, speech.id)
+
+    def _bind(self, rec: _Turn, speech_id: str) -> None:
+        if rec.speech_id == speech_id:
+            return
+        if rec.speech_id is not None:
+            self._by_speech.pop(rec.speech_id, None)
+        rec.speech_id = speech_id
+        self._by_speech[speech_id] = rec
+        pending = self._pending_speech.pop(speech_id, None)
+        if pending is not None:
+            for name in (
+                "t_llm_start", "t_llm_first_token", "t_llm_complete",
+                "t_tts_start", "t_tts_first_audio", "t_tts_complete",
+            ):
+                if getattr(rec, name) is None:
+                    setattr(rec, name, getattr(pending, name))
+            rec.tool_calls = {**pending.tool_calls, **rec.tool_calls}
+        if speech_id in self._done_speech:
+            # The generation already ended (e.g. interrupted as stale before
+            # the framework reported it); nothing more will arrive for it.
+            self._flush_rec(rec)
+
+    def _watch(self, speech) -> None:
+        if speech is None or speech.id in self._watched_speech:
+            return
+        self._watched_speech.add(speech.id)
+        speech.add_done_callback(lambda handle: self._on_speech_done(handle.id))
+
+    def _rec_for(self, speech) -> _Turn | None:
+        """The record a reply-generation event belongs to: the turn that owns
+        the SpeechHandle, a pending holder if no turn owns it yet, or None if
+        that turn already printed (a late event from a cancelled reply)."""
+        if speech is None:
+            return self._current
+        self._watch(speech)
+        rec = self._by_speech.get(speech.id)
+        if rec is not None:
+            return None if rec.flushed else rec
+        rec = self._pending_speech.get(speech.id)
+        if rec is None:
+            self._prune_speech_state()
+            rec = _Turn(index=0, t_stt_final=_now(), speech_id=speech.id)
+            self._pending_speech[speech.id] = rec
+        return rec
+
+    def _prune_speech_state(self) -> None:
+        cutoff = _now() - 60.0
+        for sid in [k for k, v in self._pending_speech.items() if v.t_stt_final < cutoff]:
+            del self._pending_speech[sid]
+        for sid in [k for k, t in self._done_speech.items() if t < cutoff]:
+            del self._done_speech[sid]
+
+    def _on_speech_done(self, speech_id: str) -> None:
+        self._done_speech[speech_id] = _now()
+        self._watched_speech.discard(speech_id)
+        # A pending generation that ends unclaimed was a discarded
+        # preemptive attempt (or the opening greeting).
+        self._pending_speech.pop(speech_id, None)
+        rec = self._by_speech.get(speech_id)
+        if rec is None or rec.flushed:
+            return
+        if rec.t_playback_start is not None and rec.t_playback_end is None:
+            rec.t_playback_end = _now()
+        self._flush_rec(rec)
 
     def suppress_turn(self, reason: str) -> None:
         if self._current is None:
@@ -449,92 +547,72 @@ class TurnLatencyTracker:
         )
 
     # ---- LLM ----
-    def on_llm_start(self) -> None:
-        recovery, self._pending_recovery = self._pending_recovery, None
-        if recovery is not None:
-            self.start_turn(recovery["text"], "recovered_turn")
-            self._apply_recovery_semantic(self._current, recovery)
+    # ``speech`` is the SpeechHandle the generation runs under (None falls
+    # back to the current turn, e.g. a direct session.say()).
+    def on_llm_start(self, speech=None) -> None:
+        rec = self._rec_for(speech)
+        # Tool follow-up steps rerun llm_node under the same SpeechHandle;
+        # keep the first dispatch so ttft covers the whole reply.
+        if rec is not None and rec.t_llm_start is None:
+            rec.t_llm_start = _now()
 
-        if self._current is None:
-            # Preemptive generation (turn_handling.preemptive_generation)
-            # dispatches the LLM call on an interim transcript, before the
-            # turn it belongs to has committed and opened its _Turn record.
-            # Buffer the start time so the next start_turn() can claim it —
-            # otherwise this timestamp is lost and the eventual turn's
-            # llm_dispatch/llm_ttft silently read n/a even though the LLM
-            # call (and its latency) already genuinely happened.
-            self._pending_llm_start = _now()
-            return
-
-        if self._current.t_llm_start is None or self._current.t_llm_start_provisional:
-            # A live call always wins over a claimed-provisional guess: if
-            # the preemptive attempt this turn provisionally claimed gets
-            # invalidated, the SDK starts a fresh generate_reply(), which
-            # fires on_llm_start() again with this turn already current —
-            # that's ground truth and should replace the provisional value.
-            self._current.t_llm_start = _now()
-            self._current.t_llm_start_provisional = False
-
-    def on_llm_first_signal(self) -> None:
+    def on_llm_first_signal(self, speech=None) -> None:
         pass
 
-    def on_llm_first_token(self) -> None:
-        if self._current is None:
-            # Same reasoning as on_llm_start: a preemptive generation can
-            # reach its first token before the turn it belongs to commits.
-            # Buffer it — if that generation is the one that ends up
-            # reused, this is genuinely the final reply's first token, and
-            # dropping it here would make an already-ready turn look like
-            # it still owed the full generation time after commit.
-            self._pending_llm_first_token = _now()
+    def on_llm_first_token(self, speech=None) -> None:
+        rec = self._rec_for(speech)
+        if rec is not None and rec.t_llm_first_token is None:
+            rec.t_llm_first_token = _now()
+
+    def on_llm_complete(self, text: str, speech=None) -> None:
+        rec = self._rec_for(speech)
+        if rec is not None:
+            rec.t_llm_complete = _now()
+
+    def on_llm_cancelled(self, speech=None) -> None:
+        rec = self._rec_for(speech)
+        if rec is None:
             return
-
-        if self._current.t_llm_first_token is None or self._current.t_llm_first_token_provisional:
-            # A live call wins over a claimed-provisional guess, same as
-            # on_llm_start — covers a preemptive attempt that reached a
-            # first token, then got invalidated in favor of a fresh call.
-            self._current.t_llm_first_token = _now()
-            self._current.t_llm_first_token_provisional = False
-
-    def on_llm_complete(self, text: str) -> None:
-        if self._current is not None:
-            self._current.t_llm_complete = _now()
-
-    def on_llm_cancelled(self) -> None:
-        if self._current is None:
+        if rec.index == 0:
+            self._pending_speech.pop(rec.speech_id, None)
             return
-        self._current.reply_cancelled = True
-        self._flush()
+        rec.reply_cancelled = True
+        self._flush_rec(rec)
 
     # ---- TTS ----
-    def on_tts_start(self) -> None:
-        if self._current is not None and self._current.t_tts_start is None:
-            self._current.t_tts_start = _now()
+    def on_tts_start(self, speech=None) -> None:
+        rec = self._rec_for(speech)
+        if rec is not None and rec.t_tts_start is None:
+            rec.t_tts_start = _now()
 
-    def on_tts_first_audio(self) -> None:
-        if self._current is not None and self._current.t_tts_first_audio is None:
-            self._current.t_tts_first_audio = _now()
+    def on_tts_first_audio(self, speech=None) -> None:
+        rec = self._rec_for(speech)
+        if rec is not None and rec.t_tts_first_audio is None:
+            rec.t_tts_first_audio = _now()
 
-    def on_tts_complete(self, chars: int) -> None:
-        if self._current is None:
+    def on_tts_complete(self, chars: int, speech=None) -> None:
+        rec = self._rec_for(speech)
+        if rec is None:
             return
-        self._current.t_tts_complete = _now()
-        self._maybe_flush()
+        rec.t_tts_complete = _now()
+        self._maybe_flush(rec)
 
-    def on_tts_no_output(self) -> None:
-        if self._current is not None:
-            self._flush()
+    def on_tts_no_output(self, speech=None) -> None:
+        rec = self._rec_for(speech)
+        if rec is not None and rec.index != 0:
+            self._flush_rec(rec)
 
-    def on_tts_cancelled(self, chars: int) -> None:
-        if self._current is None:
+    def on_tts_cancelled(self, chars: int, speech=None) -> None:
+        rec = self._rec_for(speech)
+        if rec is None:
             return
-        if (
-            self._current.t_playback_start is not None
-            and self._current.t_playback_end is None
-        ):
-            self._current.t_playback_end = _now()
-        self._current.reply_cancelled = True
-        self._flush()
+        if rec.index == 0:
+            self._pending_speech.pop(rec.speech_id, None)
+            return
+        if rec.t_playback_start is not None and rec.t_playback_end is None:
+            rec.t_playback_end = _now()
+        rec.reply_cancelled = True
+        self._flush_rec(rec)
 
     # ---- tool calls ----
     def on_tool_call_start(self, call_id: str, name: str) -> None:
@@ -560,25 +638,29 @@ class TurnLatencyTracker:
             )
 
     # ---- room playback ----
-    def on_playback_start(self) -> None:
-        if self._current is not None and self._current.t_playback_start is None:
-            self._current.t_playback_start = _now()
+    def on_playback_start(self, speech_id: str | None = None) -> None:
+        rec = self._by_speech.get(speech_id) if speech_id else self._current
+        if rec is None or rec.flushed:
+            return
+        self._playing = rec
+        if rec.t_playback_start is None:
+            rec.t_playback_start = _now()
 
     def on_playback_end(self) -> None:
-        if self._current is None or self._current.t_playback_start is None:
+        rec, self._playing = self._playing, None
+        if rec is None or rec.flushed or rec.t_playback_start is None:
             return
-        if self._current.t_playback_end is None:
-            self._current.t_playback_end = _now()
-        self._maybe_flush()
+        if rec.t_playback_end is None:
+            rec.t_playback_end = _now()
+        self._maybe_flush(rec)
 
-    def _maybe_flush(self) -> None:
-        rec = self._current
+    def _maybe_flush(self, rec: _Turn) -> None:
         if (
-            rec is not None
+            rec.index != 0
             and rec.t_tts_complete is not None
             and rec.t_playback_end is not None
         ):
-            self._flush()
+            self._flush_rec(rec)
 
     # ---- guard observer ----
     def record_guard_event(self, kind: str, data: dict) -> None:
@@ -607,6 +689,8 @@ class TurnLatencyTracker:
                 self._current.filler_check = data
         elif kind == "recovery":
             self._on_recovery(data)
+        elif kind == "recovery_speech":
+            self.bind_speech(data.get("speech"))
 
     def _apply_recovery_semantic(self, rec: _Turn | None, data: dict) -> None:
         if rec is None:
@@ -635,9 +719,11 @@ class TurnLatencyTracker:
 
     def _on_recovery(self, data: dict) -> None:
         if data.get("action") == "regenerated":
-            # The new reply's LLM start opens the block; opening it here would
-            # race the cancel events of the reply being replaced.
-            self._pending_recovery = data
+            # Open the block now; the guard reports the new reply's
+            # SpeechHandle right after ("recovery_speech"). Events from the
+            # reply being replaced stay on its own turn via its speech id.
+            self.start_turn(data.get("text", ""), "recovered_turn")
+            self._apply_recovery_semantic(self._current, data)
             return
         # Suppressed: the reply still playing must keep its own block intact,
         # so print this one standalone without touching _current.
@@ -663,12 +749,22 @@ class TurnLatencyTracker:
                 self._current.suppressed or "session_closed_mid_turn"
             )
             self._flush()
+        # Superseded turns whose reply never finished.
+        for rec in list(self._by_speech.values()):
+            self._flush_rec(rec)
 
     def _flush(self) -> None:
-        rec = self._current
-        if rec is None:
+        if self._current is not None:
+            self._flush_rec(self._current)
+
+    def _flush_rec(self, rec: _Turn) -> None:
+        if rec.flushed or rec.index == 0:
             return
-        self._current = None
+        rec.flushed = True
+        if self._current is rec:
+            self._current = None
+        if self._playing is rec:
+            self._playing = None
         self._render(rec)
 
     # ============================================================
@@ -829,7 +925,68 @@ class TurnLatencyTracker:
                 "since the previous turn."
             )
         rows.append(("summary", summary))
-        return _section("DYNAMIC ENDPOINTING", rows)
+        rows.extend(self._eot_rows(rec, ep_max))
+        return _section("ENDPOINTING", rows)
+
+    def _eot_rows(self, rec: _Turn, ep_max: float | None) -> list[tuple[str, object]]:
+        rows: list[tuple[str, object]] = []
+        if self.turn_detector_name:
+            rows.append(("turn_detector", self.turn_detector_name))
+        pred = rec.eot_prediction
+        if pred is not None:
+            verdict = "complete" if pred.get("complete") else "incomplete"
+            rows.append(("eot_probability", f"{pred.get('probability', 0.0):.3f}"))
+            rows.append(("eot_threshold", f"{pred.get('threshold', 0.0):.2f}"))
+            rows.append(("eot_verdict", verdict + (" (inference failed)" if pred.get("failed") else "")))
+            rows.append(("eot_inference", _ms((pred.get("inference_ms") or 0.0) / 1000)))
+            rows.append(("eot_predictions_this_turn", rec.eot_predictions))
+            eou = rec.eou_delay
+            if eou is not None and ep_max is not None:
+                committed_by = (
+                    "incomplete ceiling (max_delay reached, caller stayed silent)"
+                    if not pred.get("complete") and eou >= 0.95 * ep_max
+                    else "complete path (min_delay)" if pred.get("complete")
+                    else "incomplete path"
+                )
+                rows.append(("committed_by", committed_by))
+            rows.extend(self._eot_timing_rows(rec, pred))
+        if rec.resumed_after_commit is not None:
+            rows.append((
+                "premature_eot",
+                f"caller spoke again {_ms(rec.resumed_after_commit)} after the commit",
+            ))
+        return rows
+
+    @staticmethod
+    def _eot_timing_rows(rec: _Turn, pred: dict) -> list[tuple[str, object]]:
+        """Place the end-of-turn prediction on the speech end -> commit timeline.
+
+        The framework starts the prediction after ~200ms of VAD silence and
+        measures the endpointing delay from speech end, not from the verdict,
+        so verdict -> commit is whatever is left of min/max_delay (0 when the
+        delay already elapsed while the model ran).
+        """
+        speech_end, eou = rec.t_user_speech_end, rec.eou_delay
+        t_req, t_verdict = pred.get("t_requested"), pred.get("t_verdict")
+        if speech_end is None or eou is None or t_req is None or t_verdict is None:
+            return []
+        commit = speech_end + eou
+        requested = t_req - speech_end
+        verdict = t_verdict - speech_end
+        after_verdict = commit - t_verdict
+        rows: list[tuple[str, object]] = [
+            ("eot_requested_after_speech_end", _ms(requested)),
+            ("eot_verdict_after_speech_end", _ms(verdict)),
+            ("eot_verdict_to_commit", _ms(after_verdict) if after_verdict >= 0 else "n/a (verdict after commit)"),
+        ]
+        if after_verdict >= 0:
+            rows.append((
+                "eot_timeline",
+                f"speech end -> {_ms(requested)} silence before the model was asked -> "
+                f"{_ms(verdict - requested)} to verdict -> {_ms(after_verdict)} more until commit "
+                f"(total {_ms(eou)})",
+            ))
+        return rows
 
     # ---- semantic check ----
     @staticmethod
@@ -995,27 +1152,52 @@ class TurnLatencyTracker:
         ends = [e["t_end"] for e in rec.tool_calls.values() if e["t_end"] is not None]
         return _dt(min(starts), max(ends)) if starts and ends else None
 
+    @staticmethod
+    def _stage(rec: _Turn, start: float | None, end: float | None, *, llm: bool = False) -> str:
+        """A stage duration, or why it could not be measured."""
+        value = _dt(start, end)
+        if value is not None:
+            return _ms(value)
+        if llm and rec.event_type == "silence_reprompt":
+            return "n/a (scripted line, no LLM call)"
+        if rec.reply_cancelled and start is not None:
+            return "n/a (reply cancelled before this point)"
+        if rec.reply_cancelled:
+            return "n/a (reply cancelled before this stage started)"
+        if rec.speech_id is None:
+            return "n/a (no reply generation was attached to this turn)"
+        return "n/a (stage did not report)"
+
     def _llm_block(self, rec: _Turn) -> str:
         rows: list[tuple[str, object]] = [
-            ("ttft", _ms(_dt(rec.t_llm_start, rec.t_llm_first_token))),
-            ("generation_time", _ms(_dt(rec.t_llm_first_token, rec.t_llm_complete))),
+            ("ttft", self._stage(rec, rec.t_llm_start, rec.t_llm_first_token, llm=True)),
+            ("generation_time", self._stage(rec, rec.t_llm_first_token, rec.t_llm_complete, llm=True)),
         ]
         if rec.tool_calls:
             names = ", ".join(sorted({e["name"] for e in rec.tool_calls.values()}))
             rows.append(("tool_calls", f"{len(rec.tool_calls)} [{names}] took {_ms(self._tool_span(rec))}"))
         return _section("LLM", rows)
 
-    @staticmethod
-    def _tts_block(rec: _Turn) -> str:
+    def _tts_block(self, rec: _Turn) -> str:
         return _section(
             "TTS",
             [
-                ("ttfb", _ms(_dt(rec.t_tts_start, rec.t_tts_first_audio))),
-                ("synthesis_time", _ms(_dt(rec.t_tts_start, rec.t_tts_complete))),
+                ("ttfb", self._stage(rec, rec.t_tts_start, rec.t_tts_first_audio)),
+                ("synthesis_time", self._stage(rec, rec.t_tts_start, rec.t_tts_complete)),
             ],
         )
 
     # ---- latency ----
+    @staticmethod
+    def _eot_decision_time(rec: _Turn) -> tuple[str, float] | None:
+        """Seconds from the caller's speech end to the end-of-turn model's
+        last verdict for this turn, with that verdict."""
+        pred = rec.eot_prediction
+        if pred is None or rec.t_user_speech_end is None or pred.get("t_verdict") is None:
+            return None
+        verdict = "complete" if pred.get("complete") else "incomplete"
+        return verdict, round(pred["t_verdict"] - rec.t_user_speech_end, 3)
+
     def _latency_block(self, rec: _Turn) -> str:
         speech_end = rec.t_user_speech_end or rec.t_stt_final
         # Main-reply audio only (filler handles are excluded upstream).
@@ -1030,6 +1212,10 @@ class TurnLatencyTracker:
         stages: list[tuple[str, float | None]] = []
         if rec.eou_delay is not None:
             stages.append(("stt_final", rec.transcription_delay))
+            eot_decision = self._eot_decision_time(rec)
+            if eot_decision is not None:
+                verdict, elapsed = eot_decision
+                stages.append((f"eot_decision (speech end -> {verdict} verdict)", elapsed))
             stages.append(("endpointing (speech end -> turn commit)", rec.eou_delay))
             stages.append(("turn_hook (guard/veto checks)", rec.hook_delay))
         if rec.t_llm_first_token is not None and hook_done is not None:
@@ -1123,6 +1309,7 @@ def attach_turn_logger(
             end_of_utterance_delay=m.end_of_utterance_delay,
             transcription_delay=m.transcription_delay,
             on_user_turn_completed_delay=m.on_user_turn_completed_delay,
+            speech_id=getattr(m, "speech_id", None),
         )
 
     def _on_agent_state_changed(event) -> None:
@@ -1131,7 +1318,8 @@ def attach_turn_logger(
         ):
             return
         if getattr(event, "new_state", None) == "speaking":
-            tracker.on_playback_start()
+            speech = session.current_speech
+            tracker.on_playback_start(speech.id if speech is not None else None)
         else:
             tracker.on_playback_end()
 
@@ -1144,8 +1332,13 @@ def attach_turn_logger(
         elif update_type == "tool_call_ended":
             tracker.on_tool_call_end(update.call_id, update.status)
 
+    def _on_user_state_changed(event) -> None:
+        if getattr(event, "new_state", None) == "speaking":
+            tracker.on_user_speech_started()
+
     session.on("metrics_collected")(_on_metrics_collected)
     session.on("agent_state_changed")(_on_agent_state_changed)
+    session.on("user_state_changed")(_on_user_state_changed)
     session.on("tool_execution_updated")(_on_tool_execution_updated)
     session.on("close")(lambda _event: tracker.flush_dangling())
 

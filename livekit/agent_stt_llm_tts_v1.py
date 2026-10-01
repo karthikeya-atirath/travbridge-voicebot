@@ -22,10 +22,16 @@ from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io, TurnHandlingOptions, inference
 from livekit.plugins import google, silero, deepgram, sarvam
 from google.genai.types import HttpOptions, ThinkingConfig
-from speech_tuner import attach_speech_tuner, CATEGORY_CONFIGS, resolve_profile
+from speech_tuner import attach_speech_tuner, CATEGORY_CONFIGS, resolve_profile, TURN_DETECTOR, USE_SMART_TURN
+from smart_turn import SmartTurnDetector, attach_smart_turn
 from interruption_guard import InterruptionGuard, attach_interruption_guard
 from stt_flush import FlushableDeepgramSTT, attach_stt_flush
 from turn_logger import TurnLatencyTracker, attach_turn_logger
+# The SpeechHandle a pipeline node is running under. LiveKit sets it on the
+# speech task, and the llm/tts node tasks inherit it; the turn logger routes
+# timings by it so a reply cancelled or finishing after a newer turn opened
+# is still logged against its own turn.
+from livekit.agents.voice.agent_activity import _SpeechHandleContextVar
 from tool_filler import FillerRegistry
 from tools import (
     get_travel_package,
@@ -63,22 +69,23 @@ class Assistant(agents.Agent):
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Capture generated text so posture is available during playback."""
         collected_text = ""
+        speech = _SpeechHandleContextVar.get(None)
         if self.turn_logger is not None:
             # Marks the moment the request is actually handed to the LLM —
             # distinct from when the user stopped speaking, which also
             # includes STT/EOU/guard time already accounted for elsewhere.
-            self.turn_logger.on_llm_start()
+            self.turn_logger.on_llm_start(speech)
         try:
             async for chunk in agents.Agent.default.llm_node(
                 self, chat_ctx, tools, model_settings
             ):
                 if self.turn_logger is not None:
-                    self.turn_logger.on_llm_first_signal()
+                    self.turn_logger.on_llm_first_signal(speech)
                 delta = getattr(chunk, "delta", None)
                 content = getattr(delta, "content", None)
                 if isinstance(content, str):
                     if not collected_text and self.turn_logger is not None:
-                        self.turn_logger.on_llm_first_token()
+                        self.turn_logger.on_llm_first_token(speech)
                     collected_text += content
                     if (
                         self.interruption_guard is not None
@@ -90,7 +97,7 @@ class Assistant(agents.Agent):
                 yield chunk
         except asyncio.CancelledError:
             if self.turn_logger is not None:
-                self.turn_logger.on_llm_cancelled()
+                self.turn_logger.on_llm_cancelled(speech)
             raise
 
         if self.interruption_guard is not None and collected_text.strip():
@@ -98,7 +105,7 @@ class Assistant(agents.Agent):
                 collected_text, source="llm_complete"
             )
         if self.turn_logger is not None:
-            self.turn_logger.on_llm_complete(collected_text)
+            self.turn_logger.on_llm_complete(collected_text, speech)
 
     async def tts_node(self, text, model_settings):
         """Log whether a generated reply actually reaches synthesized audio.
@@ -125,9 +132,12 @@ class Assistant(agents.Agent):
         # "speaking" just like a real reply would. Checking it against the
         # filler registry here is what keeps that from being logged/tracked
         # as if the real response had started (see tool_filler.py).
+        # The handle this synthesis belongs to, not session.current_speech:
+        # preemptive TTS runs before its handle is the one playing.
+        speech = _SpeechHandleContextVar.get(None)
         is_filler = (
             self.filler_registry is not None
-            and self.filler_registry.is_filler(self.session.current_speech)
+            and self.filler_registry.is_filler(speech or self.session.current_speech)
         )
 
         async def _observed_text():
@@ -136,7 +146,7 @@ class Assistant(agents.Agent):
                 if not started:
                     started = True
                     if self.turn_logger is not None and not is_filler:
-                        self.turn_logger.on_tts_start()
+                        self.turn_logger.on_tts_start(speech)
                 chars_in += len(chunk)
                 yield chunk
 
@@ -148,11 +158,11 @@ class Assistant(agents.Agent):
                 if not first_frame_seen:
                     first_frame_seen = True
                     if self.turn_logger is not None and not is_filler:
-                        self.turn_logger.on_tts_first_audio()
+                        self.turn_logger.on_tts_first_audio(speech)
                 yield frame
         except asyncio.CancelledError:
             if self.turn_logger is not None and not is_filler:
-                self.turn_logger.on_tts_cancelled(chars_in)
+                self.turn_logger.on_tts_cancelled(chars_in, speech)
             raise
         except Exception:
             applog.exception(
@@ -162,10 +172,10 @@ class Assistant(agents.Agent):
         else:
             if started:
                 if self.turn_logger is not None and not is_filler:
-                    self.turn_logger.on_tts_complete(chars_in)
+                    self.turn_logger.on_tts_complete(chars_in, speech)
             else:
                 if self.turn_logger is not None and not is_filler:
-                    self.turn_logger.on_tts_no_output()
+                    self.turn_logger.on_tts_no_output(speech)
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         """Veto generation for turns that carry no new meaning.
@@ -200,6 +210,25 @@ class Assistant(agents.Agent):
         if self.interruption_guard.is_redundant_turn(text):
             if self.turn_logger is not None:
                 self.turn_logger.suppress_turn("redundant_turn")
+            raise agents.StopResponse()
+        # If the user finished another turn while this one was still being
+        # processed (an await in on_user_turn_completed, or the framework's
+        # own awaits before it), LiveKit treats this turn as stale: it creates its SpeechHandle and immediately calls
+        # speech_handle.interrupt() on it. With interruption.enabled=False
+        # that handle is non-interruptible, so interrupt() raises
+        # RuntimeError. That kills this task, and every later
+        # _user_turn_completed_task awaits it as old_task and re-raises the
+        # same error, so the bot stops answering for the rest of the call.
+        # Between this return and that interrupt() there is no await, so
+        # checking here closes the race. Commit the message the way the
+        # framework's interrupt would have (so the newer turn still has it
+        # as context), then drop the reply.
+        activity = self._activity
+        if activity is not None and activity._user_turn_completed_atask is not asyncio.current_task():
+            self._chat_ctx.items.append(new_message)
+            self.session._conversation_item_added(new_message)
+            if self.turn_logger is not None:
+                self.turn_logger.suppress_turn("superseded_by_newer_turn")
             raise agents.StopResponse()
 
 
@@ -255,8 +284,17 @@ async def my_agent(ctx: agents.JobContext):
         "prefix_padding_duration": 0.15,
         "sample_rate": 16000,
     }
+    # Endpointing comes straight from the profile: fixed for Smart Turn
+    # (min_delay = "complete" wait, max_delay = "incomplete" ceiling), dynamic
+    # with a learned floor for LiveKit's v1-mini.
+    endpointing_opts = {"mode": "dynamic", **_default_profile["endpointing"]}
+    # VAD is only the trigger; the audio end-of-turn model decides the turn.
+    if USE_SMART_TURN:
+        turn_detector = SmartTurnDetector(session_label=customer_id)
+    else:
+        turn_detector = inference.TurnDetector(version="v1-mini")
     applog.info(
-        f"[VAD CONFIG] profile={profile_name} adaptive_tuning={ENABLE_SPEECH_TUNING} "
+        f"[VAD CONFIG] turn_detector={TURN_DETECTOR} profile={profile_name} adaptive_tuning={ENABLE_SPEECH_TUNING} "
         f"vad(activation_threshold={vad_params['activation_threshold']} "
         f"min_silence_duration={vad_params['min_silence_duration']}s "
         f"min_speech_duration={vad_params['min_speech_duration']}s "
@@ -264,9 +302,10 @@ async def my_agent(ctx: agents.JobContext):
         f"stt(endpointing_ms={_default_profile['stt']['endpointing_ms']} "
         f"no_delay={_default_profile['stt']['no_delay']}) "
         f"tts(pace={_default_profile['tts']['pace']}) "
-        f"endpointing(min_delay={_default_profile['endpointing']['min_delay']}s "
-        f"max_delay={_default_profile['endpointing']['max_delay']}s "
-        f"alpha={_default_profile['endpointing']['alpha']}) "
+        f"endpointing(mode={endpointing_opts['mode']} "
+        f"min_delay={endpointing_opts['min_delay']}s "
+        f"max_delay={endpointing_opts['max_delay']}s "
+        f"alpha={endpointing_opts.get('alpha', 'n/a')}) "
         f"preemptive_generation={_default_profile['preemptive_generation']['enabled']}"
     )
     # Subclass that lets attach_stt_flush() force a final at end of speech.
@@ -293,15 +332,8 @@ async def my_agent(ctx: agents.JobContext):
             pace=_default_profile["tts"]["pace"],
         ),
         turn_handling=TurnHandlingOptions(
-            turn_detection=inference.TurnDetector(
-                version="v1-mini"
-            ),
-            endpointing={
-                "mode": "dynamic",
-                "min_delay": _default_profile["endpointing"]["min_delay"],
-                "max_delay": _default_profile["endpointing"]["max_delay"],
-                "alpha": _default_profile["endpointing"]["alpha"],
-            },
+            turn_detection=turn_detector,
+            endpointing=endpointing_opts,
             interruption={
                 "enabled": False,
                 "discard_audio_if_uninterruptible": False,
@@ -488,7 +520,10 @@ async def my_agent(ctx: agents.JobContext):
                         # happens inside the await below) has it to write out.
                         tracker.on_llm_complete(message)
                     try:
-                        await session.say(message, allow_interruptions=True)
+                        handle = session.say(message, allow_interruptions=True)
+                        if tracker is not None:
+                            tracker.bind_speech(handle)
+                        await handle
                         last_prompt_time = now
                     except Exception as e:
                         print(f"[RE-PROMPT ERROR] {e}")
@@ -524,7 +559,9 @@ async def my_agent(ctx: agents.JobContext):
     # this registry just tracks which SpeechHandles were filler lines.
     filler_registry = FillerRegistry()
     interruption_guard = attach_interruption_guard(
-        session, session_label=customer_id, filler_registry=filler_registry
+        session,
+        session_label=customer_id,
+        filler_registry=filler_registry,
     )
     attach_stt_flush(session, stt_engine, session_label=customer_id)
     assistant = Assistant(full_instructions=full_instructions)
@@ -542,6 +579,10 @@ async def my_agent(ctx: agents.JobContext):
         default_max_delay=_default_profile["endpointing"]["max_delay"],
     )
     turn_logger_holder["tracker"] = assistant.turn_logger
+    assistant.turn_logger.turn_detector_name = turn_detector.model
+    if isinstance(turn_detector, SmartTurnDetector):
+        turn_detector.on_prediction = assistant.turn_logger.record_eot_prediction
+        attach_smart_turn(session, turn_detector)
     if ENABLE_SPEECH_TUNING:
         attach_speech_tuner(
             session,
@@ -591,6 +632,12 @@ def _prewarm(proc: agents.JobProcess) -> None:
     from semantic_check import warm_model
 
     warm_model()
+    if USE_SMART_TURN:
+        # Same reason: the Smart Turn ONNX session must not load on a job's
+        # first end-of-turn prediction.
+        from smart_turn import warm_model as warm_smart_turn
+
+        warm_smart_turn()
 
 
 if __name__ == "__main__":

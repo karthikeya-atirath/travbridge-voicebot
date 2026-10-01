@@ -10,6 +10,7 @@ object and discard the learned floor.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 
@@ -22,7 +23,36 @@ from app_logger import applog
 
 _STT_ENDPOINTING_MS = 200
 
-CATEGORY_CONFIGS = {
+# "smart_turn" (default) or "livekit_mini" — which audio end-of-turn model
+# decides the turn (see smart_turn.py). Read here because the endpointing
+# policy has to match the model: each detector gets its own profile table.
+TURN_DETECTOR = os.environ.get("TURN_DETECTOR", "smart_turn").strip().lower()
+USE_SMART_TURN = TURN_DETECTOR != "livekit_mini"
+
+# Smart Turn decides the turn, so endpointing is fixed rather than learned:
+# min_delay is the "complete" path (just long enough for the Deepgram final),
+# max_delay is the "incomplete" ceiling after which the turn commits anyway.
+# VAD silence is the same for both profiles; it only has to reach the
+# framework's 0.25s floor for streaming detectors and end the segment.
+SMART_TURN_CATEGORY_CONFIGS = {
+    "responsive": {
+        "endpointing": {"mode": "fixed", "min_delay": 0.20, "max_delay": 1.60},
+        "vad": {"min_silence_duration": 0.30},
+        "tts": {"pace": 1.025},
+        "preemptive_generation": {"enabled": True, "preemptive_tts": False},
+        "stt": {"endpointing_ms": _STT_ENDPOINTING_MS, "interim_results": True, "no_delay": True},
+    },
+    "patient": {
+        "endpointing": {"mode": "fixed", "min_delay": 0.25, "max_delay": 2.20},
+        "vad": {"min_silence_duration": 0.30},
+        "tts": {"pace": 0.90},
+        "preemptive_generation": {"enabled": False, "preemptive_tts": False},
+        "stt": {"endpointing_ms": _STT_ENDPOINTING_MS, "interim_results": True, "no_delay": True},
+    },
+}
+
+# Unchanged policy for LiveKit's turn-detector-v1-mini (the A/B / rollback arm).
+LIVEKIT_MINI_CATEGORY_CONFIGS = {
     "responsive": {
         "endpointing": {"min_delay": 0.175, "max_delay": 0.60, "alpha": 0.7},
         "vad": {"min_silence_duration": 0.40},
@@ -40,6 +70,10 @@ CATEGORY_CONFIGS = {
         "stt": {"endpointing_ms": _STT_ENDPOINTING_MS, "interim_results": True, "no_delay": True},
     },
 }
+
+CATEGORY_CONFIGS = (
+    SMART_TURN_CATEGORY_CONFIGS if USE_SMART_TURN else LIVEKIT_MINI_CATEGORY_CONFIGS
+)
 
 # Accept previous deployment values while collapsing them onto the two
 # policies. This avoids breaking existing SPEECH_PROFILE environment values.
@@ -105,12 +139,20 @@ def apply_category(session: AgentSession, category: str) -> bool:
     endpoint_updated = False
     update_endpointing = getattr(endpointing, "update_options", None)
     if callable(update_endpointing):
-        # min_delay is deliberately not passed: update_options(min_delay=...)
-        # resets the learned EMA. max_delay/alpha leave the learned value intact.
-        update_endpointing(
-            max_delay=config["endpointing"]["max_delay"],
-            alpha=config["endpointing"]["alpha"],
-        )
+        if config["endpointing"].get("mode") == "fixed":
+            # Fixed endpointing (Smart Turn) has no learned floor to protect
+            # and its update_options takes no alpha.
+            update_endpointing(
+                min_delay=config["endpointing"]["min_delay"],
+                max_delay=config["endpointing"]["max_delay"],
+            )
+        else:
+            # min_delay is deliberately not passed: update_options(min_delay=...)
+            # resets the learned EMA. max_delay/alpha leave the learned value intact.
+            update_endpointing(
+                max_delay=config["endpointing"]["max_delay"],
+                alpha=config["endpointing"]["alpha"],
+            )
         endpoint_updated = True
 
     # AgentActivity re-reads session.options.preemptive_generation on every
