@@ -19,6 +19,11 @@ Attribution rules:
 - Dropped-then-recovered user turns (see InterruptionGuard.recover_dropped_turn)
   never reach Agent.on_user_turn_completed; the guard's "recovery" event opens
   (or, if suppressed, directly prints) their block.
+- Besides the per-turn block, every stage logs one "[STAGE]" line the moment
+  it starts or ends (LLM request, first token, TTS start, first audio, tool
+  call end, first audible audio...), each with how long the stage took and how
+  long after the caller stopped speaking it happened, so latency is visible
+  while the turn is still in flight instead of only afterwards.
 - A stage timing that comes out negative was measured against another turn's
   timestamps; it is printed as n/a instead of a misleading number.
 """
@@ -162,8 +167,10 @@ def _tokens(text: str) -> set[str]:
 # RECORD
 # ============================================================
 
-def _guard_semantic_text(rec: "_Turn") -> str:
+def _guard_semantic_text(rec: "_Turn", enabled: bool = True) -> str:
     """Where the semantic check sat in a live guard decision."""
+    if not enabled:
+        return "off (SEMANTIC_CHECK = False in agent_config.py)"
     if rec.decision_user_filler:
         return "skipped (filler)"
     return "ran" if rec.decision_has_semantic else "not reached"
@@ -179,6 +186,11 @@ class _Turn:
     eou_delay: float | None = None
     hook_delay: float | None = None
     t_user_speech_end: float | None = None
+    # When the caller's speech last ended according to VAD (the user state
+    # went speaking -> listening) before this turn opened; the origin of the
+    # live "[STAGE]" offsets. Earlier than t_user_speech_end + eou by design
+    # of VAD silence, later than the true end by that same silence.
+    t_user_stopped: float | None = None
 
     t_llm_start: float | None = None
     t_llm_first_token: float | None = None
@@ -298,6 +310,10 @@ class TurnLatencyTracker:
         # Name of the audio end-of-turn model, and its predictions not yet
         # claimed by a turn (predictions land before the turn opens).
         self.turn_detector_name: str | None = None
+        # Mirrors agent_config.SEMANTIC_CHECK so the guard block can say the
+        # check was switched off instead of "not reached".
+        self.semantic_check_enabled = True
+        self._user_stopped_at: float | None = None
         self._pending_eot: dict | None = None
         self._pending_eot_count = 0
 
@@ -318,9 +334,30 @@ class TurnLatencyTracker:
             event_type=event_type,
             stt_text=stt_text,
             t_stt_final=_now(),
+            t_user_stopped=self._user_stopped_at if event_type != "silence_reprompt" else None,
         )
         self._claim_pending_guard(self._current)
         self._claim_pending_eot(self._current)
+
+    # ---- live stage lines ----
+    def on_user_speech_stopped(self) -> None:
+        self._user_stopped_at = _now()
+
+    def _live(self, rec: _Turn | None, name: str, took: float | None = None, note: str = "") -> None:
+        """Log one stage boundary immediately: what it measured and how long
+        after the caller stopped speaking it happened."""
+        if rec is None:
+            return
+        who = f"turn {rec.index}" if rec.index else "preemptive"
+        parts = [f"{name}"]
+        if took is not None:
+            parts.append(f"took {_ms(took)}")
+        since = _dt(rec.t_user_stopped, _now())
+        if since is not None:
+            parts.append(f"at +{_ms(since)} after user stopped speaking")
+        if note:
+            parts.append(note)
+        applog.info(f"[STAGE][{self.session_label}][{who}] " + " | ".join(parts))
 
     # ---- end-of-turn model ----
     def record_eot_prediction(self, info: dict) -> None:
@@ -412,6 +449,14 @@ class TurnLatencyTracker:
         self._current.transcription_delay = round(transcription_delay, 3)
         self._current.eou_delay = round(end_of_utterance_delay, 3)
         self._current.hook_delay = round(on_user_turn_completed_delay, 3)
+        self._live(
+            self._current,
+            "turn_committed",
+            note=(
+                f"stt_final={_ms(transcription_delay)} endpointing={_ms(end_of_utterance_delay)} "
+                f"turn_hook={_ms(on_user_turn_completed_delay)}"
+            ),
+        )
         if speech_id:
             # The SpeechHandle the framework chose to answer this turn — a
             # reused preemptive generation or a fresh one.
@@ -465,7 +510,10 @@ class TurnLatencyTracker:
         rec = self._pending_speech.get(speech.id)
         if rec is None:
             self._prune_speech_state()
-            rec = _Turn(index=0, t_stt_final=_now(), speech_id=speech.id)
+            rec = _Turn(
+                index=0, t_stt_final=_now(), speech_id=speech.id,
+                t_user_stopped=self._user_stopped_at,
+            )
             self._pending_speech[speech.id] = rec
         return rec
 
@@ -555,6 +603,7 @@ class TurnLatencyTracker:
         # keep the first dispatch so ttft covers the whole reply.
         if rec is not None and rec.t_llm_start is None:
             rec.t_llm_start = _now()
+            self._live(rec, "llm_started")
 
     def on_llm_first_signal(self, speech=None) -> None:
         pass
@@ -563,16 +612,19 @@ class TurnLatencyTracker:
         rec = self._rec_for(speech)
         if rec is not None and rec.t_llm_first_token is None:
             rec.t_llm_first_token = _now()
+            self._live(rec, "llm_first_token (ttft)", _dt(rec.t_llm_start, rec.t_llm_first_token))
 
     def on_llm_complete(self, text: str, speech=None) -> None:
         rec = self._rec_for(speech)
         if rec is not None:
             rec.t_llm_complete = _now()
+            self._live(rec, "llm_complete (generation)", _dt(rec.t_llm_first_token, rec.t_llm_complete))
 
     def on_llm_cancelled(self, speech=None) -> None:
         rec = self._rec_for(speech)
         if rec is None:
             return
+        self._live(rec, "llm_cancelled", _dt(rec.t_llm_start, _now()))
         if rec.index == 0:
             self._pending_speech.pop(rec.speech_id, None)
             return
@@ -584,17 +636,20 @@ class TurnLatencyTracker:
         rec = self._rec_for(speech)
         if rec is not None and rec.t_tts_start is None:
             rec.t_tts_start = _now()
+            self._live(rec, "tts_started")
 
     def on_tts_first_audio(self, speech=None) -> None:
         rec = self._rec_for(speech)
         if rec is not None and rec.t_tts_first_audio is None:
             rec.t_tts_first_audio = _now()
+            self._live(rec, "tts_first_audio (ttfb)", _dt(rec.t_tts_start, rec.t_tts_first_audio))
 
     def on_tts_complete(self, chars: int, speech=None) -> None:
         rec = self._rec_for(speech)
         if rec is None:
             return
         rec.t_tts_complete = _now()
+        self._live(rec, "tts_complete (synthesis)", _dt(rec.t_tts_start, rec.t_tts_complete))
         self._maybe_flush(rec)
 
     def on_tts_no_output(self, speech=None) -> None:
@@ -606,6 +661,7 @@ class TurnLatencyTracker:
         rec = self._rec_for(speech)
         if rec is None:
             return
+        self._live(rec, "tts_cancelled", _dt(rec.t_tts_start, _now()))
         if rec.index == 0:
             self._pending_speech.pop(rec.speech_id, None)
             return
@@ -631,6 +687,10 @@ class TurnLatencyTracker:
         if entry is None:
             return
         entry["t_end"] = _now()
+        self._live(
+            self._current, f"tool_call_done {entry['name']}",
+            _dt(entry["t_start"], entry["t_end"]), note=f"status={status}",
+        )
         if status not in ("completed", "success"):
             applog.info(
                 f"[TURN][{self.session_label}][turn {self._current.index}] "
@@ -645,6 +705,7 @@ class TurnLatencyTracker:
         self._playing = rec
         if rec.t_playback_start is None:
             rec.t_playback_start = _now()
+            self._live(rec, "first_audio_playing (time_to_first_audio)")
 
     def on_playback_end(self) -> None:
         rec, self._playing = self._playing, None
@@ -733,6 +794,7 @@ class TurnLatencyTracker:
             event_type="dropped_turn",
             stt_text=data.get("text", ""),
             t_stt_final=_now(),
+            t_user_stopped=self._user_stopped_at,
             suppressed=data.get("suppress_reason"),
         )
         self._claim_pending_guard(rec)
@@ -1062,8 +1124,7 @@ class TurnLatencyTracker:
         return _section("FILLER CHECK", rows)
 
     # ---- interruption guard ----
-    @staticmethod
-    def _guard_block(rec: _Turn) -> str:
+    def _guard_block(self, rec: _Turn) -> str:
         decision = rec.decision
         base = _base_reason(rec.decision_reason)
         posture = _POSTURE_TEXT.get(rec.decision_posture or "", rec.decision_posture or "an unknown state")
@@ -1104,7 +1165,7 @@ class TurnLatencyTracker:
             ("bot_speech", rec.decision_posture or "n/a"),
             ("expected_user_speech", rec.decision_expects or "n/a"),
             ("user_filler", rec.decision_user_filler or "none (real content)"),
-            ("semantic_check", _guard_semantic_text(rec)),
+            ("semantic_check", _guard_semantic_text(rec, self.semantic_check_enabled)),
             ("decision", decision),
             ("reason", rec.decision_reason or "n/a"),
             ("is_final", "n/a" if rec.decision_is_final is None else str(bool(rec.decision_is_final)).lower()),
@@ -1276,9 +1337,10 @@ class TurnLatencyTracker:
 def attach_turn_logger(
     session,
     session_label: str,
-    interruption_guard,
+    interruption_guard=None,
     filler_registry=None,
     *,
+    semantic_check_enabled: bool = True,
     vad_threshold: float | None = None,
     vad_min_silence: float | None = None,
     default_min_delay: float | None = None,
@@ -1299,7 +1361,11 @@ def attach_turn_logger(
         default_max_delay=default_max_delay,
     )
 
-    interruption_guard.add_observer(tracker.record_guard_event)
+    tracker.semantic_check_enabled = semantic_check_enabled
+    # None when INTERRUPTION_GUARD is off in agent_config.py: no guard/semantic
+    # sections are recorded, everything else still is.
+    if interruption_guard is not None:
+        interruption_guard.add_observer(tracker.record_guard_event)
 
     def _on_metrics_collected(event) -> None:
         m = getattr(event, "metrics", None)
@@ -1335,6 +1401,8 @@ def attach_turn_logger(
     def _on_user_state_changed(event) -> None:
         if getattr(event, "new_state", None) == "speaking":
             tracker.on_user_speech_started()
+        elif getattr(event, "old_state", None) == "speaking":
+            tracker.on_user_speech_stopped()
 
     session.on("metrics_collected")(_on_metrics_collected)
     session.on("agent_state_changed")(_on_agent_state_changed)

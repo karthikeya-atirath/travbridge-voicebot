@@ -11,18 +11,13 @@ print(f"[ENV] Loaded .env_{APP_ENV}")
 
 
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "http://localhost:8000")
-ENABLE_SPEECH_TUNING = os.environ.get("ENABLE_SPEECH_TUNING", "true").lower() == "true"
-# Start with the patient policy until the caller has supplied enough evidence
-# for a responsive policy. This deliberately biases the first few turns
-# against cutting off callers who pause to think. Existing profile names such
-# as fast_aggressive and micro_pauses remain accepted as aliases.
-SPEECH_PROFILE = os.environ.get("SPEECH_PROFILE", "patient")
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, room_io, TurnHandlingOptions, inference
 from livekit.plugins import google, silero, deepgram, sarvam
 from google.genai.types import HttpOptions, ThinkingConfig
-from speech_tuner import attach_speech_tuner, CATEGORY_CONFIGS, resolve_profile, TURN_DETECTOR, USE_SMART_TURN
+import agent_config
+from speech_tuner import attach_speech_tuner, CATEGORY_CONFIGS, resolve_profile
 from smart_turn import SmartTurnDetector, attach_smart_turn
 from interruption_guard import InterruptionGuard, attach_interruption_guard
 from stt_flush import FlushableDeepgramSTT, attach_stt_flush
@@ -79,8 +74,6 @@ class Assistant(agents.Agent):
             async for chunk in agents.Agent.default.llm_node(
                 self, chat_ctx, tools, model_settings
             ):
-                if self.turn_logger is not None:
-                    self.turn_logger.on_llm_first_signal(speech)
                 delta = getattr(chunk, "delta", None)
                 content = getattr(delta, "content", None)
                 if isinstance(content, str):
@@ -170,11 +163,10 @@ class Assistant(agents.Agent):
             )
             raise
         else:
-            if started:
-                if self.turn_logger is not None and not is_filler:
+            if self.turn_logger is not None and not is_filler:
+                if started:
                     self.turn_logger.on_tts_complete(chars_in, speech)
-            else:
-                if self.turn_logger is not None and not is_filler:
+                else:
                     self.turn_logger.on_tts_no_output(speech)
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
@@ -198,11 +190,13 @@ class Assistant(agents.Agent):
         StopResponse drops the turn entirely (no LLM call, not added to
         history) so the agent simply keeps waiting / doesn't repeat itself.
         """
-        if self.interruption_guard is None:
-            return
         text = new_message.text_content or ""
         if self.turn_logger is not None:
             self.turn_logger.start_turn(text)
+        if self.interruption_guard is None:
+            # INTERRUPTION_GUARD = False: no vetoes, and LiveKit's own
+            # interruption handling is on, so none of the guard's races apply.
+            return
         if self.interruption_guard.is_non_answer_for_current_posture(text):
             if self.turn_logger is not None:
                 self.turn_logger.suppress_turn("non_answer_filler")
@@ -270,12 +264,13 @@ async def my_agent(ctx: agents.JobContext):
     # ────────────────────────────────────────────────
     #               Session Configuration
     # ────────────────────────────────────────────────
-    # Every call starts on the patient policy while the classifier gathers
-    # evidence. It adapts to the caller every five completed turns, with
-    # hysteresis before switching and an immediate patient override when the
-    # current endpointing ceiling is repeatedly reached. Set
-    # ENABLE_SPEECH_TUNING=false to keep the selected startup policy fixed.
-    profile_name = resolve_profile(SPEECH_PROFILE)
+    # Every call starts on agent_config.SPEECH_PROFILE (patient by default,
+    # so the first turns don't cut off callers who pause to think). With
+    # SPEECH_TUNING on, the classifier adapts it every five completed turns,
+    # with hysteresis before switching and an immediate patient override when
+    # the endpointing ceiling is repeatedly reached.
+    # All switches live in agent_config.py.
+    profile_name = resolve_profile(agent_config.SPEECH_PROFILE)
     _default_profile = CATEGORY_CONFIGS[profile_name]
     vad_params = {
         "activation_threshold": 0.55,
@@ -288,13 +283,17 @@ async def my_agent(ctx: agents.JobContext):
     # (min_delay = "complete" wait, max_delay = "incomplete" ceiling), dynamic
     # with a learned floor for LiveKit's v1-mini.
     endpointing_opts = {"mode": "dynamic", **_default_profile["endpointing"]}
-    # VAD is only the trigger; the audio end-of-turn model decides the turn.
-    if USE_SMART_TURN:
+    # VAD is only the trigger; the end-of-turn detector decides the turn.
+    if agent_config.TURN_DETECTOR == "smart_turn":
         turn_detector = SmartTurnDetector(session_label=customer_id)
-    else:
+    elif agent_config.TURN_DETECTOR == "livekit_mini":
         turn_detector = inference.TurnDetector(version="v1-mini")
+    else:
+        # "vad": no model, VAD silence + endpointing alone decide the turn.
+        turn_detector = "vad"
+    applog.info(f"[CONFIG][{customer_id}] {agent_config.summary()}")
     applog.info(
-        f"[VAD CONFIG] turn_detector={TURN_DETECTOR} profile={profile_name} adaptive_tuning={ENABLE_SPEECH_TUNING} "
+        f"[VAD CONFIG][{customer_id}] turn_detector={agent_config.TURN_DETECTOR} profile={profile_name} "
         f"vad(activation_threshold={vad_params['activation_threshold']} "
         f"min_silence_duration={vad_params['min_silence_duration']}s "
         f"min_speech_duration={vad_params['min_speech_duration']}s "
@@ -308,6 +307,19 @@ async def my_agent(ctx: agents.JobContext):
         f"alpha={endpointing_opts.get('alpha', 'n/a')}) "
         f"preemptive_generation={_default_profile['preemptive_generation']['enabled']}"
     )
+    if agent_config.INTERRUPTION_GUARD:
+        # The guard is the sole interruption owner: LiveKit's own handling
+        # stays off, so every SpeechHandle is non-interruptible until the
+        # guard force-interrupts it.
+        interruption_opts = {
+            "enabled": False,
+            "discard_audio_if_uninterruptible": False,
+            "false_interruption_timeout": None,
+            "resume_false_interruption": False,
+        }
+    else:
+        # INTERRUPTION_GUARD = False: LiveKit's built-in interruption handling.
+        interruption_opts = {"enabled": True}
     # Subclass that lets attach_stt_flush() force a final at end of speech.
     stt_engine = FlushableDeepgramSTT(
         model="nova-2",
@@ -334,12 +346,7 @@ async def my_agent(ctx: agents.JobContext):
         turn_handling=TurnHandlingOptions(
             turn_detection=turn_detector,
             endpointing=endpointing_opts,
-            interruption={
-                "enabled": False,
-                "discard_audio_if_uninterruptible": False,
-                "false_interruption_timeout": None,
-                "resume_false_interruption": False,
-            },
+            interruption=interruption_opts,
             # Per-profile: on for responsive callers, off for patient ones
             # (see CATEGORY_CONFIGS; the speech tuner flips it on profile switch).
             preemptive_generation=dict(_default_profile["preemptive_generation"]),
@@ -387,7 +394,7 @@ async def my_agent(ctx: agents.JobContext):
     # trigger start_turn() from, so it must be logged explicitly to keep
     # per-turn latency logging covering every reply, not just LLM-driven ones.
     turn_logger_holder: dict = {"tracker": None}
-                                                     
+
     # ────────────────────────────────────────────────
     #                Event Handlers
     # ────────────────────────────────────────────────
@@ -549,8 +556,9 @@ async def my_agent(ctx: agents.JobContext):
             print(f"[SILENCE] {idle:.1f}s")
 
     # ────────────────────────────────────────────────
-    # Adaptive classification and tuning are enabled by default. Each five-turn
-    # window can move the live session to the matching speech profile.
+    # Components below are attached according to agent_config.py. Each five-turn
+    # window of the speech tuner can move the live session to the matching
+    # speech profile.
     # ────────────────────────────────────────────────
     # filler registry is attached before the guard so the guard can tell
     # whether whatever it's about to interrupt is a filler line rather
@@ -558,32 +566,40 @@ async def my_agent(ctx: agents.JobContext):
     # Fillers themselves are now spoken at tool-call level (see tool_filler.py);
     # this registry just tracks which SpeechHandles were filler lines.
     filler_registry = FillerRegistry()
-    interruption_guard = attach_interruption_guard(
-        session,
-        session_label=customer_id,
-        filler_registry=filler_registry,
-    )
+    interruption_guard = None
+    if agent_config.INTERRUPTION_GUARD:
+        interruption_guard = attach_interruption_guard(
+            session,
+            session_label=customer_id,
+            filler_registry=filler_registry,
+            semantic_check_enabled=agent_config.SEMANTIC_CHECK,
+        )
     attach_stt_flush(session, stt_engine, session_label=customer_id)
     assistant = Assistant(full_instructions=full_instructions)
     assistant.interruption_guard = interruption_guard
     assistant.filler_registry = filler_registry
     assistant.session_label = customer_id
-    assistant.turn_logger = attach_turn_logger(
-        session,
-        session_label=customer_id,
-        interruption_guard=interruption_guard,
-        filler_registry=assistant.filler_registry,
-        vad_threshold=vad_params["activation_threshold"],
-        vad_min_silence=vad_params["min_silence_duration"],
-        default_min_delay=_default_profile["endpointing"]["min_delay"],
-        default_max_delay=_default_profile["endpointing"]["max_delay"],
-    )
-    turn_logger_holder["tracker"] = assistant.turn_logger
-    assistant.turn_logger.turn_detector_name = turn_detector.model
+    if agent_config.TURN_LOGGER:
+        assistant.turn_logger = attach_turn_logger(
+            session,
+            session_label=customer_id,
+            interruption_guard=interruption_guard,
+            filler_registry=filler_registry,
+            semantic_check_enabled=agent_config.SEMANTIC_CHECK,
+            vad_threshold=vad_params["activation_threshold"],
+            vad_min_silence=vad_params["min_silence_duration"],
+            default_min_delay=_default_profile["endpointing"]["min_delay"],
+            default_max_delay=_default_profile["endpointing"]["max_delay"],
+        )
+        turn_logger_holder["tracker"] = assistant.turn_logger
+        assistant.turn_logger.turn_detector_name = (
+            getattr(turn_detector, "model", None) or agent_config.TURN_DETECTOR
+        )
     if isinstance(turn_detector, SmartTurnDetector):
-        turn_detector.on_prediction = assistant.turn_logger.record_eot_prediction
+        if assistant.turn_logger is not None:
+            turn_detector.on_prediction = assistant.turn_logger.record_eot_prediction
         attach_smart_turn(session, turn_detector)
-    if ENABLE_SPEECH_TUNING:
+    if agent_config.SPEECH_TUNING:
         attach_speech_tuner(
             session,
             session_label=customer_id,
@@ -629,10 +645,11 @@ def _prewarm(proc: agents.JobProcess) -> None:
     # model load blocks that job's event loop, which stalls the in-flight
     # Deepgram/LLM connections at the same moment (they show up as an
     # unrelated-looking Deepgram disconnect + LLM CancelledError).
-    from semantic_check import warm_model
+    if agent_config.SEMANTIC_CHECK:
+        from semantic_check import warm_model
 
-    warm_model()
-    if USE_SMART_TURN:
+        warm_model()
+    if agent_config.TURN_DETECTOR == "smart_turn":
         # Same reason: the Smart Turn ONNX session must not load on a job's
         # first end-of-turn prediction.
         from smart_turn import warm_model as warm_smart_turn

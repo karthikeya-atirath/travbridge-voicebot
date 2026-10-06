@@ -10,24 +10,24 @@ object and discard the learned floor.
 
 from __future__ import annotations
 
-import os
 import re
 import time
 
 from livekit.agents import AgentSession
 from livekit.agents.metrics import EOUMetrics
 
+import agent_config
 from speech_classifier import SpeechClassifier, TurnSignal
 from interruption_guard import InterruptionGuard
 from app_logger import applog
 
 _STT_ENDPOINTING_MS = 200
 
-# "smart_turn" (default) or "livekit_mini" — which audio end-of-turn model
-# decides the turn (see smart_turn.py). Read here because the endpointing
-# policy has to match the model: each detector gets its own profile table.
-TURN_DETECTOR = os.environ.get("TURN_DETECTOR", "smart_turn").strip().lower()
-USE_SMART_TURN = TURN_DETECTOR != "livekit_mini"
+# Which end-of-turn detector decides the turn comes from agent_config.py. The
+# endpointing policy has to match it: smart_turn gets its own fixed table,
+# livekit_mini and vad share the dynamic one.
+TURN_DETECTOR = agent_config.TURN_DETECTOR
+USE_SMART_TURN = agent_config.USE_SMART_TURN
 
 # Smart Turn decides the turn, so endpointing is fixed rather than learned:
 # min_delay is the "complete" path (just long enough for the Deepgram final),
@@ -38,7 +38,7 @@ SMART_TURN_CATEGORY_CONFIGS = {
     "responsive": {
         "endpointing": {"mode": "fixed", "min_delay": 0.20, "max_delay": 1.60},
         "vad": {"min_silence_duration": 0.30},
-        "tts": {"pace": 1.025},
+        "tts": {"pace": 1.06},
         "preemptive_generation": {"enabled": True, "preemptive_tts": False},
         "stt": {"endpointing_ms": _STT_ENDPOINTING_MS, "interim_results": True, "no_delay": True},
     },
@@ -56,7 +56,7 @@ LIVEKIT_MINI_CATEGORY_CONFIGS = {
     "responsive": {
         "endpointing": {"min_delay": 0.175, "max_delay": 0.60, "alpha": 0.7},
         "vad": {"min_silence_duration": 0.40},
-        "tts": {"pace": 1.025},
+        "tts": {"pace": 1.06},
         # Speculative LLM start only for callers who rarely pause mid-thought;
         # for patient callers it drafts replies from half-finished sentences.
         "preemptive_generation": {"enabled": True, "preemptive_tts": False},
@@ -71,9 +71,10 @@ LIVEKIT_MINI_CATEGORY_CONFIGS = {
     },
 }
 
-CATEGORY_CONFIGS = (
-    SMART_TURN_CATEGORY_CONFIGS if USE_SMART_TURN else LIVEKIT_MINI_CATEGORY_CONFIGS
-)
+if USE_SMART_TURN:
+    CATEGORY_CONFIGS = SMART_TURN_CATEGORY_CONFIGS
+else:
+    CATEGORY_CONFIGS = LIVEKIT_MINI_CATEGORY_CONFIGS
 
 # Accept previous deployment values while collapsing them onto the two
 # policies. This avoids breaking existing SPEECH_PROFILE environment values.
@@ -334,7 +335,9 @@ def attach_speech_tuner(
             f"{candidate_profile or 'n/a'} candidate_windows={candidate_windows} "
             f"active_policy={current_profile} ceiling_rate="
             f"{classifier.last_vector.get('ceiling_rate', 0.0):.2f} "
-            f"continuation_rate={classifier.last_vector.get('continuation_rate', 0.0):.2f}"
+            f"continuation_rate={classifier.last_vector.get('continuation_rate', 0.0):.2f} "
+            f"mix_ratio={pending_signal.mix_ratio:.2f} "
+            f"calculation_time={calculation_time * 1000:.1f}ms"
         )
         if turn_logger is not None:
             turn_logger.record_speech_tuning(

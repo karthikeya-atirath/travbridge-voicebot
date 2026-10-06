@@ -31,7 +31,6 @@ is scored instead.
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 import time
 import weakref
@@ -44,6 +43,7 @@ from livekit import rtc
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, APIConnectOptions
 from livekit.agents.voice.turn import TurnDetectionEvent
 
+import agent_config
 from _whisper_features import compute_whisper_log_mel_features
 from app_logger import applog
 
@@ -129,7 +129,7 @@ class SmartTurnDetector:
         session_label: str = "session",
     ) -> None:
         self._default_threshold, self._thresholds = parse_thresholds(
-            threshold if threshold is not None else os.environ.get("SMART_TURN_THRESHOLD")
+            threshold if threshold is not None else agent_config.SMART_TURN_THRESHOLD
         )
         self.on_prediction = on_prediction
         self.session_label = session_label

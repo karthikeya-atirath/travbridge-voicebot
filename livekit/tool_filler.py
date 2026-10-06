@@ -18,12 +18,14 @@ twice since nothing new happened between the two fires.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import time
 from typing import TYPE_CHECKING, Sequence
 
 from livekit.agents import function_tool
 
+import agent_config
 from app_logger import applog
 
 if TYPE_CHECKING:
@@ -138,6 +140,9 @@ def tool_filler_for(
     every tool's parameters — those would otherwise show up as spurious
     arguments in the tool's LLM-facing schema.
     """
+    if not agent_config.TOOL_FILLER:
+        # TOOL_FILLER = False in agent_config.py: the tool just runs silently.
+        return contextlib.nullcontext()
     agent = context.session.current_agent
     registry = getattr(agent, "filler_registry", None)
     session_label = getattr(agent, "session_label", "session")

@@ -967,10 +967,15 @@ class InterruptionGuard:
         session_label: str = "session",
         on_event: Callable[[str, dict], None] | None = None,
         filler_registry: object | None = None,
+        semantic_check_enabled: bool = True,
     ) -> None:
         self.session = session
         self.session_label = session_label
         self.state = GuardState()
+        # agent_config.SEMANTIC_CHECK. When False the embedding model is never
+        # called: overlapping speech is judged by the lexical rules alone, and
+        # finalized turns are never vetoed as redundant.
+        self.semantic_check_enabled = semantic_check_enabled
         # Optional tool_filler.FillerRegistry — lets the guard tell
         # whether whatever it's about to interrupt is a filler line
         # ("Just a moment.") rather than the real assistant reply. Without
@@ -1221,6 +1226,8 @@ class InterruptionGuard:
         Meant to be checked from Agent.on_user_turn_completed to veto
         generation before it happens.
         """
+        if not self.semantic_check_enabled:
+            return False
         normalized_text = normalize_text(text)
         attention = is_attention_getter(normalized_text)
         if attention or _is_filler_answer(normalized_text, self.state.posture):
@@ -1396,7 +1403,8 @@ class InterruptionGuard:
         )
         analysis = None
         if (
-            not non_answer
+            self.semantic_check_enabled
+            and not non_answer
             and not is_attention_getter(normalize_text(text))
             and not _is_filler_answer(normalize_text(text), self.state.posture)
         ):
@@ -1424,7 +1432,11 @@ class InterruptionGuard:
             "expected_user_speech": EXPECTED_USER_SPEECH[self.state.posture],
             "user_filler": filler_kind(normalize_text(text)),
             "delta": analysis.delta.value if analysis else "skipped",
-            "reason": analysis.reason if analysis else "filler_rule",
+            "reason": (
+                analysis.reason
+                if analysis
+                else "filler_rule" if self.semantic_check_enabled else "semantic_check_off"
+            ),
             "similarity": analysis.similarity if analysis else None,
             "compared_with": active.text if analysis and active else None,
         }
@@ -1542,7 +1554,7 @@ class InterruptionGuard:
         if role == "assistant":
             self._assistant_has_spoken = True
             self.set_assistant_text(text, source="conversation")
-        elif role == "user":
+        elif role == "user" and self.semantic_check_enabled:
             # If this turn came out of a barge-in, use the verdict already
             # computed for it: REDUNDANT must not overwrite active_turn
             # with the dismissed fragment. A plain (non-overlap) turn has
@@ -1662,7 +1674,11 @@ class InterruptionGuard:
         # measuring when a real interruption feels slow to land.
         semantic_check_time: float | None = None
         paused_for_semantic_check = False
-        if decision is InterruptDecision.INTERRUPT and reason not in SEMANTIC_EXEMPT_REASONS:
+        if (
+            self.semantic_check_enabled
+            and decision is InterruptDecision.INTERRUPT
+            and reason not in SEMANTIC_EXEMPT_REASONS
+        ):
             # Stop the bot the instant this looks like it might be a real
             # interruption, before waiting on the semantic check to confirm
             # it — see _pause_playback_for_semantic_check. Explicit commands
@@ -1881,12 +1897,14 @@ def attach_interruption_guard(
     session_label: str | None = None,
     on_event: Callable[[str, dict], None] | None = None,
     filler_registry: object | None = None,
+    semantic_check_enabled: bool = True,
 ) -> InterruptionGuard:
     guard = InterruptionGuard(
         session=session,
         session_label=session_label or "session",
         on_event=on_event,
         filler_registry=filler_registry,
+        semantic_check_enabled=semantic_check_enabled,
     )
     session.on("agent_state_changed")(guard.on_agent_state_changed)
     session.on("user_state_changed")(guard.on_user_state_changed)
