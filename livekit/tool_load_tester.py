@@ -462,6 +462,7 @@ def summarize(name: str, results: List[CallResult], wall: float) -> Dict[str, An
 # =============================================================================
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
+SUMMARY_ROW_FILL = PatternFill("solid", fgColor="D9E1F2")
 STATUS_FILLS = {
     "SUCCESS": PatternFill("solid", fgColor="C6EFCE"),
     "TOOL_ERROR": PatternFill("solid", fgColor="FFEB9C"),
@@ -532,6 +533,7 @@ def write_excel(path: str, runs: Dict[str, tuple], summaries: List[Dict[str, Any
     ]
     headers += [f"{field}_part_{part}" for field, part in extra_columns]
     widths = [8, 60, 90, 12, 13, 10, 12, 7, 45, 12, 90] + [90] * len(extra_columns)
+    by_tool = {x["tool"]: x for x in summaries}
     all_calls = wb.create_sheet("All Calls")
     _write_header(all_calls, ["tool"] + headers, [30] + widths)
     for name, (results, _) in runs.items():
@@ -555,7 +557,24 @@ def write_excel(path: str, runs: Dict[str, tuple], summaries: List[Dict[str, Any
                     wrap_text=True, vertical="top")
         ws.auto_filter.ref = ws.dimensions
 
-    all_calls.auto_filter.ref = all_calls.dimensions
+        # Accumulated metrics for this tool, right after its calls in the combined sheet
+        sm = by_tool[name]
+        metrics = (f"calls={sm['calls']} success={sm['success']} tool_error={sm['tool_error']} "
+                   f"exception={sm['exception']} timeout={sm['timeout']} "
+                   f"success_rate={sm['success_rate_%']}% | min={sm['min_s']}s avg={sm['avg_s']}s "
+                   f"p50={sm['p50_s']}s p90={sm['p90_s']}s p95={sm['p95_s']}s max={sm['max_s']}s "
+                   f"wall={sm['wall_clock_s']}s")
+        all_calls.append([name, "SUMMARY", "", metrics, sm["total_retries"], "", sm["avg_s"],
+                          f"{sm['success']}/{sm['calls']} ok"])
+        for c in all_calls[all_calls.max_row]:
+            c.font = Font(bold=True)
+            c.fill = SUMMARY_ROW_FILL
+
+    # 1 header + (calls + 1 summary row) per tool, and open the workbook on this sheet
+    wb.move_sheet(all_calls, offset=-wb.index(all_calls))
+    wb.active = 0
+    for sheet in wb.worksheets:
+        sheet.sheet_view.tabSelected = sheet is all_calls
 
     wb.save(path)
 
