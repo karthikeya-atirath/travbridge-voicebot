@@ -301,6 +301,7 @@ class CallResult:
     inputs: Dict[str, Any]
     output: Any
     error_logs: List[str] = field(default_factory=list)
+    retry_count: int = 0
 
 
 # Each parallel call runs in its own asyncio task (own contextvars copy), so log
@@ -308,13 +309,41 @@ class CallResult:
 _current_call_logs: contextvars.ContextVar[Optional[List[str]]] = contextvars.ContextVar(
     "_current_call_logs", default=None
 )
+_current_call_retries: contextvars.ContextVar[Optional[List[int]]] = contextvars.ContextVar(
+    "_current_call_retries", default=None
+)
+
+
+def _instrument_retries(module):
+    """Observe actual retry attempts, including those inside asyncio.to_thread."""
+    for fn in vars(module).values():
+        retry = getattr(fn, "retry", None)
+        if retry is None or getattr(retry, "_load_tester_instrumented", False):
+            continue
+        original_before = retry.before
+
+        def before(state, original=original_before):
+            bucket = _current_call_retries.get()
+            if bucket is not None and state.attempt_number > 1:
+                bucket[0] += 1
+            if original is not None:
+                original(state)
+
+        retry.before = before
+        retry._load_tester_instrumented = True
 
 
 class _CallLogCapture(logging.Handler):
     def __init__(self):
-        super().__init__(level=logging.WARNING)
+        super().__init__(level=logging.INFO)
 
     def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage().startswith("[FARE_CAL] fareCalendar is null"):
+            retries = _current_call_retries.get()
+            if retries is not None:
+                retries[0] += 1
+        if record.levelno < logging.WARNING:
+            return
         bucket = _current_call_logs.get()
         if bucket is None:
             return
@@ -361,6 +390,7 @@ class ToolRunner:
     async def run_tool(self, name: str) -> tuple:
         spec = TOOLS[name]
         tool = _load_tool(spec.module, name)
+        _instrument_retries(importlib.import_module(spec.module))
 
         if self.custom_inputs:
             inputs = [dict(x) for x in itertools.islice(itertools.cycle(self.custom_inputs), self.calls)]
@@ -374,6 +404,8 @@ class ToolRunner:
             async with sem:
                 logs: List[str] = []
                 _current_call_logs.set(logs)
+                retries = [0]
+                _current_call_retries.set(retries)
                 started = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 t0 = time.perf_counter()
                 try:
@@ -387,7 +419,8 @@ class ToolRunner:
                     status, code, msg = "EXCEPTION", None, f"{type(real).__name__}: {real}"
                 latency = time.perf_counter() - t0
                 print(f"  #{i + 1:<3} {status:<10} {latency:7.2f}s  {msg[:80]}")
-                return CallResult(i + 1, started, latency, status, code, msg, kwargs, out, logs)
+                return CallResult(i + 1, started, latency, status, code, msg, kwargs, out, logs,
+                                  retries[0])
 
         print(f"\n▶ {name}: {self.calls} calls, concurrency {self.concurrency}")
         wall0 = time.perf_counter()
@@ -420,6 +453,7 @@ def summarize(name: str, results: List[CallResult], wall: float) -> Dict[str, An
         "max_s": round(lat[-1], 3) if lat else 0,
         "avg_success_s": round(statistics.mean(ok), 3) if ok else None,
         "wall_clock_s": round(wall, 3),
+        "total_retries": sum(r.retry_count for r in results),
     }
 
 
@@ -441,6 +475,15 @@ def _cell_text(value: Any) -> str:
     return text if len(text) <= EXCEL_CELL_LIMIT else text[:EXCEL_CELL_LIMIT] + " …[truncated]"
 
 
+def _full_text(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _parts(value: Any) -> List[str]:
+    text = _full_text(value)
+    return [text[i:i + EXCEL_CELL_LIMIT] for i in range(0, len(text), EXCEL_CELL_LIMIT)] or [""]
+
+
 def _write_header(ws, headers, widths):
     ws.append(headers)
     for col, w in enumerate(widths, 1):
@@ -459,22 +502,60 @@ def write_excel(path: str, runs: Dict[str, tuple], summaries: List[Dict[str, Any
     _write_header(ws, keys, [30] + [13] * (len(keys) - 1))
     for s in summaries:
         ws.append([s[k] for k in keys])
+    # Grand total across all tools (counts and retries only; latency stats don't add up)
+    total = {k: None for k in keys}
+    total["tool"] = "TOTAL (all tools)"
+    for k in ("calls", "success", "tool_error", "exception", "timeout", "total_retries"):
+        total[k] = sum(s[k] for s in summaries)
+    total["success_rate_%"] = round(100 * total["success"] / total["calls"], 1) if total["calls"] else 0
+    ws.append([total[k] for k in keys])
+    for c in ws[ws.max_row]:
+        c.font = Font(bold=True)
 
-    headers = ["call_no", "started_at", "latency_s", "status", "code", "message",
-               "input_params", "output", "output_chars", "error_logs"]
+    headers = ["call_no", "input_params", "output", "retry_count", "started_at",
+               "latency_s", "status", "code", "message", "output_chars", "error_logs"]
+    # Excel limits each cell to 32,767 characters. Keep every character by
+    # continuing large fields in numbered columns rather than truncating them.
+    fields = {
+        "input_params": lambda r: r.inputs,
+        "output": lambda r: r.output,
+        "error_logs": lambda r: "\n".join(r.error_logs),
+        "message": lambda r: r.message,
+    }
+    extra_columns = [
+        (field, part)
+        for field, getter in fields.items()
+        for part in range(2, 1 + max(
+            (len(_parts(getter(r))) for results, _ in runs.values() for r in results),
+            default=1,
+        ))
+    ]
+    headers += [f"{field}_part_{part}" for field, part in extra_columns]
+    widths = [8, 60, 90, 12, 13, 10, 12, 7, 45, 12, 90] + [90] * len(extra_columns)
+    all_calls = wb.create_sheet("All Calls")
+    _write_header(all_calls, ["tool"] + headers, [30] + widths)
     for name, (results, _) in runs.items():
         ws = wb.create_sheet(name[:31])
-        _write_header(ws, headers, [8, 13, 10, 12, 7, 45, 60, 90, 12, 90])
+        _write_header(ws, headers, widths)
         for r in sorted(results, key=lambda x: x.call_no):
-            out_text = _cell_text(r.output)
-            ws.append([r.call_no, r.started_at, round(r.latency_s, 3), r.status, r.code,
-                       r.message, _cell_text(r.inputs), out_text, len(out_text),
-                       _cell_text("\n".join(r.error_logs))])
+            parts = {field: _parts(getter(r)) for field, getter in fields.items()}
+            values = [r.call_no, parts["input_params"][0], parts["output"][0], r.retry_count,
+                      r.started_at, round(r.latency_s, 3), r.status, r.code, parts["message"][0],
+                      len(_full_text(r.output)), parts["error_logs"][0]]
+            values += [parts[field][part - 1] if len(parts[field]) >= part else ""
+                       for field, part in extra_columns]
+            ws.append(values)
+            all_calls.append([name] + values)
             row = ws.max_row
-            ws.cell(row=row, column=4).fill = STATUS_FILLS.get(r.status, PatternFill())
-            for col in (6, 7, 8, 10):
-                ws.cell(row=row, column=col).alignment = Alignment(wrap_text=False, vertical="top")
+            ws.cell(row=row, column=7).fill = STATUS_FILLS.get(r.status, PatternFill())
+            for col in (2, 3, 9, 11):
+                ws.cell(row=row, column=col).alignment = Alignment(wrap_text=True, vertical="top")
+            for col in (3, 4, 10, 12):
+                all_calls.cell(row=all_calls.max_row, column=col).alignment = Alignment(
+                    wrap_text=True, vertical="top")
         ws.auto_filter.ref = ws.dimensions
+
+    all_calls.auto_filter.ref = all_calls.dimensions
 
     wb.save(path)
 
