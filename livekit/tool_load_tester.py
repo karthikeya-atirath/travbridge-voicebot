@@ -2,8 +2,9 @@
 Tool load tester — fires N parallel calls at one (or every) LiveKit function tool
 and writes inputs, outputs, status and latency for each call to an Excel file.
 
-The tools are called directly (no LLM, no LiveKit room), exactly as the agent's
-AgentSession would execute them, so this does not touch the running agent.
+The tools are called directly (no LiveKit room), with speech fillers and the
+agent's error-masking fallback disabled, so real tool failures are reported.
+Some tools call an LLM internally. This does not touch the running agent.
 
 Usage (run from the livekit/ folder):
     python tool_load_tester.py --list                       # show testable tools
@@ -267,7 +268,13 @@ TOOLS: Dict[str, ToolSpec] = {
 
 
 def _load_tool(module_name: str, tool_name: str):
-    return getattr(importlib.import_module(module_name), tool_name)
+    # There is no voice session in this process; fillers require a RunContext.
+    import agent_config
+    agent_config.TOOL_FILLER = False
+    tool = getattr(importlib.import_module(module_name), tool_name)
+    # safe_function_tool wraps errors in a code=200 conversational fallback.
+    # Remove that wrapper only; retain retries inside the original tool.
+    return getattr(tool, "__wrapped__", tool)
 
 
 def print_tool_list():
