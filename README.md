@@ -9,6 +9,7 @@ Real-time AI-powered VoiceBot and TextBot for **Thomas Cook (TCIL)** and **SOTC*
 - [Call Flow](#call-flow)
 - [System Architecture](#system-architecture)
 - [Tool Call Flow](#tool-call-flow)
+- [Calls Started From The Dynapack Chat UI](#calls-started-from-the-dynapack-chat-ui)
 - [Session End Processing](#session-end-processing)
 - [Project Structure](#project-structure)
 - [Technology Stack](#technology-stack)
@@ -206,6 +207,38 @@ flowchart LR
 
 ---
 
+## Calls Started From The Dynapack Chat UI
+
+The dynapack chat UI starts a voice call through its own token service (or its Vite dev
+endpoint), which dispatches `tc-travel-bot` with metadata
+`{"source": "chat_ui", "chat_id": "...", "provider": "tcil" | "sotc"}`. For those calls only,
+`agent_stt_llm_tts_v1.py` keeps STT, turn detection, interruptions and TTS, but does not use its
+own Gemini LLM or tools. `Assistant.llm_node` sends each final user transcript to dynapack's chat
+WebSocket as a `channel: "voice"` turn on that `chat_id` and streams the reply text to TTS
+(`dynapack_bridge.py`). Dynapack answers with its voice agent, a separate ADK agent with this
+bot's 13 tools (its `agents/voice_agent/` and `domain/voice/`), on the chat's own session: the
+call sees what the chat did, and the chat sees what was said on the call.
+
+- The greeting comes from dynapack's `hello_ack` (`greeting`), so a caller mid-way through a
+  chat hears that it is being picked up, and a caller building their own holiday in the chat
+  hears that changing it is chat only. Without one, the fixed greeting is spoken.
+- When the caller interrupts a reply, the bridge sends `{"type": "cancel", "message_id"}`, and
+  dynapack stops that turn's model call and tools and keeps nothing of it.
+- Preemptive generation is off for these calls (also through the speech tuner): a speculative
+  reply would be a real, recorded turn in dynapack.
+- If dynapack cannot be reached when the call starts, the call runs on this worker's own LLM
+  and tools. If a turn fails mid-call, the caller hears a short "please say that again" line.
+- Session-end processing (CRM opportunity, Elastic, DynamoDB) is unchanged: the transcript is
+  still recorded here. dynapack's pricing creates no CRM opportunity.
+- Phone calls (C-Zen) and the auto dialler carry no such metadata and are unchanged.
+
+| Variable | Meaning |
+|------|-----|
+| `DYNAPACK_WS_URL` | dynapack chat WebSocket, e.g. `wss://<host>/dynamic/v1/api/ws/invoke`. Unset: chat-UI calls use this worker's own LLM. |
+| `DYNAPACK_PROVIDER` | Brand sent to dynapack when the dispatch names none. Default `tcil`. |
+
+---
+
 ## Session End Processing
 
 When a call ends, the `on_close` event fires and triggers `session_end_processor.py`. This module uses Gemini (with `thinking_budget=0` to avoid Vertex AI's thinking-mode issue) to extract structured CRM data from the full conversation — including tool call context. It then creates or updates an opportunity in the CRM, pushes to ElasticSearch, and **always** persists the full conversation to **DynamoDB** (regardless of CRM outcome) for durable storage.
@@ -254,6 +287,7 @@ Livekit-VoiceBot/
 │   ├── aa_prompt.py               # AgentAssist prompt/instructions
 │   ├── tools.py                   # Travel package search tools
 │   ├── google_tools.py            # Google-based travel tools (destinations, flights, itineraries)
+│   ├── dynapack_bridge.py         # Chat-UI calls: replies come from the dynapack voice agent
 │   ├── opportunity_create.py      # CRM opportunity create/update
 │   ├── session_end_processor.py   # Post-call LLM extraction + CRM
 │   ├── chat_history.py            # Conversation logging

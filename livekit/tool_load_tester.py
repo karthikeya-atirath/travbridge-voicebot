@@ -36,6 +36,7 @@ import argparse
 import asyncio
 import contextvars
 import importlib
+import inspect
 import itertools
 import json
 import logging
@@ -274,7 +275,8 @@ def _load_tool(module_name: str, tool_name: str):
     tool = getattr(importlib.import_module(module_name), tool_name)
     # safe_function_tool wraps errors in a code=200 conversational fallback.
     # Remove that wrapper only; retain retries inside the original tool.
-    return getattr(tool, "__wrapped__", tool)
+    # FunctionTool.__wrapped__ is the masking wrapper; unwrap that too to reach the real tool.
+    return inspect.unwrap(tool)
 
 
 def print_tool_list():
@@ -355,9 +357,14 @@ class _CallLogCapture(logging.Handler):
 
 def classify(output: Any) -> tuple:
     """Return (status, code, message) for a tool's returned value."""
+    if output is None or output == "" or output == {} or output == []:
+        return "TOOL_ERROR", None, "empty output"
     if not isinstance(output, dict):
         return "SUCCESS", None, ""
     code = output.get("code")
+    # The agent's masking fallback ("No live data is available...") means the tool failed.
+    if "No live data is available" in str(output.get("instruction", "")):
+        return "TOOL_ERROR", code, "masked failure (fallback result: no live data)"
     msg = str(output.get("message") or output.get("error") or "")
     if isinstance(code, int) and code >= 400:
         return "TOOL_ERROR", code, msg

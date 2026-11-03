@@ -40,6 +40,7 @@ from prompts import get_agent_config
 from chat_history import ChatHistory
 from session_end_processor import process_session_end
 from app_logger import applog
+from dynapack_bridge import DynapackSession, chat_ui_dispatch
 from google_tools import get_destination_info, get_destination_food, get_destination_weather, get_destination_sightseeing, get_destination_activities, get_destination_visa_info, get_destination_hotels, recommend_destinations, get_destination_flights, create_custom_itinerary, update_custom_itinerary
 
 
@@ -60,9 +61,20 @@ class Assistant(agents.Agent):
         self.turn_logger: TurnLatencyTracker | None = None
         self.filler_registry: FillerRegistry | None = None
         self.session_label: str = "session"
+        # Set for a call started from the dynapack chat UI: dynapack writes the reply.
+        self.dynapack: DynapackSession | None = None
+
+    def _reply_chunks(self, chat_ctx, tools, model_settings):
+        if self.dynapack is None:
+            return agents.Agent.default.llm_node(self, chat_ctx, tools, model_settings)
+        return self.dynapack.reply(_last_user_text(chat_ctx))
 
     async def llm_node(self, chat_ctx, tools, model_settings):
-        """Capture generated text so posture is available during playback."""
+        """Capture generated text so posture is available during playback.
+
+        The text comes from Gemini (ChatChunk deltas) or, for a call started
+        from the dynapack chat UI, from dynapack's voice agent (str).
+        """
         collected_text = ""
         speech = _SpeechHandleContextVar.get(None)
         if self.turn_logger is not None:
@@ -71,11 +83,11 @@ class Assistant(agents.Agent):
             # includes STT/EOU/guard time already accounted for elsewhere.
             self.turn_logger.on_llm_start(speech)
         try:
-            async for chunk in agents.Agent.default.llm_node(
-                self, chat_ctx, tools, model_settings
-            ):
-                delta = getattr(chunk, "delta", None)
-                content = getattr(delta, "content", None)
+            async for chunk in self._reply_chunks(chat_ctx, tools, model_settings):
+                if isinstance(chunk, str):
+                    content = chunk
+                else:
+                    content = getattr(getattr(chunk, "delta", None), "content", None)
                 if isinstance(content, str):
                     if not collected_text and self.turn_logger is not None:
                         self.turn_logger.on_llm_first_token(speech)
@@ -226,6 +238,13 @@ class Assistant(agents.Agent):
             raise agents.StopResponse()
 
 
+def _last_user_text(chat_ctx) -> str:
+    for item in reversed(chat_ctx.items):
+        if getattr(item, "type", None) == "message" and getattr(item, "role", None) == "user":
+            return item.text_content or ""
+    return ""
+
+
 server = AgentServer()
 
 
@@ -260,6 +279,20 @@ async def my_agent(ctx: agents.JobContext):
         full_instructions = "You are a travel assistant."
         custom_prompt = ""
         opp_tool_calls = "all"
+
+    # A call started from the dynapack chat UI is answered by dynapack's voice
+    # agent, on the chat's own session (see dynapack_bridge.py). If dynapack is
+    # unreachable the call still goes ahead on this worker's own LLM and tools.
+    dynapack = None
+    ui_dispatch = chat_ui_dispatch(getattr(ctx.job, "metadata", ""))
+    if ui_dispatch is not None:
+        dynapack = DynapackSession.from_env(ui_dispatch)
+        if dynapack is not None:
+            try:
+                await dynapack.connect()
+            except Exception:
+                applog.exception("[DYNAPACK] connect failed; using this worker's own LLM")
+                dynapack = None
 
     # ────────────────────────────────────────────────
     #               Session Configuration
@@ -349,13 +382,20 @@ async def my_agent(ctx: agents.JobContext):
             interruption=interruption_opts,
             # Per-profile: on for responsive callers, off for patient ones
             # (see CATEGORY_CONFIGS; the speech tuner flips it on profile switch).
-            preemptive_generation=dict(_default_profile["preemptive_generation"]),
+            # Never preemptive for dynapack: a speculative reply there is a real,
+            # recorded turn even when LiveKit throws it away.
+            preemptive_generation=(
+                {**_default_profile["preemptive_generation"], "enabled": False}
+                if dynapack is not None
+                else dict(_default_profile["preemptive_generation"])
+            ),
         ),
         vad=silero.VAD.load(
             force_cpu=True,
             **vad_params,
         ),
-        tools=[
+        # dynapack runs the voice tools itself for a chat-UI call.
+        tools=[] if dynapack is not None else [
             get_travel_package, 
             get_fare_calendar,
             get_all_bogo_packages,
@@ -427,6 +467,8 @@ async def my_agent(ctx: agents.JobContext):
             return
                                                            
         applog.info("[ON_CLOSE] Session close event triggered")
+        if dynapack is not None:
+            asyncio.create_task(dynapack.close())
         chat_history.add_event("user_left", "Session closed")
 
         applog.info("[ON_CLOSE] Launching process_session_end...")
@@ -579,6 +621,7 @@ async def my_agent(ctx: agents.JobContext):
     assistant.interruption_guard = interruption_guard
     assistant.filler_registry = filler_registry
     assistant.session_label = customer_id
+    assistant.dynapack = dynapack
     if agent_config.TURN_LOGGER:
         assistant.turn_logger = attach_turn_logger(
             session,
@@ -606,6 +649,7 @@ async def my_agent(ctx: agents.JobContext):
             initial_profile=profile_name,
             interruption_guard=interruption_guard,
             turn_logger=assistant.turn_logger,
+            allow_preemptive=dynapack is None,
         )
 
     # ────────────────────────────────────────────────
@@ -630,6 +674,10 @@ async def my_agent(ctx: agents.JobContext):
             instructions=custom_prompt,
             allow_interruptions=False,
         )
+    elif dynapack is not None and dynapack.greeting:
+        # Chat-UI call: dynapack's opening line already knows where the chat stands
+        # (e.g. that a holiday built in the chat can only be changed there).
+        await session.say(dynapack.greeting, allow_interruptions=False)
     else:
         # Inbound: speak exact greeting verbatim via TTS
         await session.say(
@@ -672,6 +720,10 @@ if __name__ == "__main__":
             # ~12s on this box (torch import + HF hub check), so the
             # supervisor kills every job process mid-init.
             initialize_process_timeout=60.0,
+            # Each job process holds ~1.3 GB (torch + embedding model). The
+            # default keeps one idle per CPU; on this 2-CPU, 6.9 GB, no-swap
+            # box that plus a live call got OOM-killed (exit -9) mid-call.
+            num_idle_processes=1,
             agent_name=os.environ.get("AGENT_NAME", ""),
             port=int(os.environ.get("AGENT_PORT", 8081))
         )

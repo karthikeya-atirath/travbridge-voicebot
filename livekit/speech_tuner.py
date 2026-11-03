@@ -128,7 +128,7 @@ def _profile_params(profile: str) -> dict:
     }
 
 
-def apply_category(session: AgentSession, category: str) -> bool:
+def apply_category(session: AgentSession, category: str, *, allow_preemptive: bool = True) -> bool:
     """Apply one policy while preserving DynamicEndpointing's learned floor.
 
     Returns whether the live endpointing ceiling was updated. VAD, STT, and
@@ -158,7 +158,11 @@ def apply_category(session: AgentSession, category: str) -> bool:
 
     # AgentActivity re-reads session.options.preemptive_generation on every
     # preemptive attempt, so updating it in place takes effect on the next turn.
-    session.options.preemptive_generation.update(config["preemptive_generation"])
+    # allow_preemptive=False keeps it off whatever the profile says (dynapack calls).
+    preemptive = dict(config["preemptive_generation"])
+    if not allow_preemptive:
+        preemptive["enabled"] = False
+    session.options.preemptive_generation.update(preemptive)
 
     if session.vad is not None:
         session.vad.update_options(**config["vad"])
@@ -176,6 +180,7 @@ def attach_speech_tuner(
     initial_profile: str = "patient",
     interruption_guard: InterruptionGuard | None = None,
     turn_logger=None,
+    allow_preemptive: bool = True,
 ) -> None:
     """Tune broad caller policy every window, with hysteresis for stability.
 
@@ -368,7 +373,9 @@ def attach_speech_tuner(
                 patient_mode_locked = True
             return
         try:
-            endpoint_updated = apply_category(session, apply_profile)
+            endpoint_updated = apply_category(
+                session, apply_profile, allow_preemptive=allow_preemptive
+            )
             active_profile["value"] = apply_profile
             if apply_profile == "patient":
                 patient_mode_locked = True
